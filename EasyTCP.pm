@@ -1,7 +1,7 @@
 package Net::EasyTCP;
 
 #
-# $Header: /cvsroot/Net::EasyTCP/EasyTCP.pm,v 1.120 2003/05/15 13:06:23 mina Exp $
+# $Header: /cvsroot/Net::EasyTCP/EasyTCP.pm,v 1.130 2003/05/20 01:09:48 mina Exp $
 #
 
 use strict;
@@ -128,7 +128,7 @@ require AutoLoader;
 # names by default without a very good reason. Use EXPORT_OK instead.
 # Do not simply export all your public functions/methods/constants.
 @EXPORT  = qw();
-$VERSION = '0.22';
+$VERSION = '0.23';
 
 # Preloaded methods go here.
 
@@ -309,43 +309,51 @@ sub _gencompatabilityreference {
 }
 
 #
-# This takes in an encryption key id and an optional "quick" boolean flag
+# This takes in an encryption key id and an optional "forcompat" boolean flag
 # Generates a keypair (public, private) and returns them according to the type of encryption specified
 # Returns undef on error
-# If "quick" is not specified and there are already a keypair for the specified module stored globally,
+# The 2 returned keys are guaranteed to be: 1. Scalars and 2. Null-character-free. weather by their nature, or serialization or asci-fi-cation
+# If "forcompat" is not specified and there are already a keypair for the specified module stored globally,
 # it will return that instead of generating new ones.
-# If "quick" is supplied, you're guaranteed to receive a new key that wasn't given out in the past to
-# non-quick requests. It may be a repeat of a previous "quick" pair. However, the strength of that key
-# could be possibly reduced.
+# If "forcompat" is supplied, you're guaranteed to receive a new key that wasn't given out in the past to
+# non-compat requests. It may be a repeat of a previous "forcompat" pair. However, the strength of that key
+# could be possibly reduced.  Such keys are safe to reveal the private portion of publicly, as during the
+# compatability negotiation phase, however such keys must NEVER be used to encrypt any real daya, as they
+# are no longer secret.
 #
 sub _genkey {
 	my $modulekey = shift;
-	my $quick     = shift;
+	my $forcompat = shift;
 	my $module    = $_ENCRYPT_AVAILABLE{$modulekey}{name};
 	my $key1      = undef;
 	my $key2      = undef;
 	my $temp;
 	$@ = undef;
-	if (!$quick && $_ENCRYPT_AVAILABLE{$modulekey}{localpublickey} && $_ENCRYPT_AVAILABLE{$modulekey}{localprivatekey}) {
+	if (!$forcompat && $_ENCRYPT_AVAILABLE{$modulekey}{localpublickey} && $_ENCRYPT_AVAILABLE{$modulekey}{localprivatekey}) {
 		$key1 = $_ENCRYPT_AVAILABLE{$modulekey}{localpublickey};
 		$key2 = $_ENCRYPT_AVAILABLE{$modulekey}{localprivatekey};
 	}
-	elsif ($quick && $_ENCRYPT_AVAILABLE{$modulekey}{localquickpublickey} && $_ENCRYPT_AVAILABLE{$modulekey}{localquickprivatekey}) {
-		$key1 = $_ENCRYPT_AVAILABLE{$modulekey}{localquickpublickey};
-		$key2 = $_ENCRYPT_AVAILABLE{$modulekey}{localquickprivatekey};
+	elsif ($forcompat && $_ENCRYPT_AVAILABLE{$modulekey}{localcompatpublickey} && $_ENCRYPT_AVAILABLE{$modulekey}{localcompatprivatekey}) {
+		$key1 = $_ENCRYPT_AVAILABLE{$modulekey}{localcompatpublickey};
+		$key2 = $_ENCRYPT_AVAILABLE{$modulekey}{localcompatprivatekey};
 	}
 	elsif ($module eq 'Crypt::RSA') {
-		$temp = Crypt::RSA->new();
-		($key1, $key2) = $temp->keygen(
-			Size => $quick ? 338 : 512,
-			Verbosity => 0,
-		  )
-		  or $@ = "Failed to create RSA keypair: " . $temp->errstr();
-		if ($key1) {
+		eval {
+			$temp = Crypt::RSA->new() || die "Failed to create new Crypt::RSA object for key generation: $! $@\n";
+			($key1, $key2) = $temp->keygen(
+				Size      => 512,
+				Verbosity => 0,
+			  )
+			  or die "Failed to create RSA keypair: " . $temp->errstr() . "\n";
+		};
+		if ($key1 && $key2) {
 			$key1 = _bin2asc(nfreeze($key1));
-			if ($quick) {
-				$_ENCRYPT_AVAILABLE{$modulekey}{localquickpublickey}  = $key1;
-				$_ENCRYPT_AVAILABLE{$modulekey}{localquickprivatekey} = $key2;
+
+			# RSA private keys are NOT serializable with the Serialize module - we MUST use Crypt::RSA::Key::Private's undocumented serialize() method:
+			$key2 = $key2->serialize();
+			if ($forcompat) {
+				$_ENCRYPT_AVAILABLE{$modulekey}{localcompatpublickey}  = $key1;
+				$_ENCRYPT_AVAILABLE{$modulekey}{localcompatprivatekey} = $key2;
 			}
 		}
 	}
@@ -376,10 +384,15 @@ sub _genkey {
 	else {
 		$@ = "Unknown encryption module [$module] modulekey [$modulekey]";
 	}
+
 	if (!$key1 || !$key2) {
 		$@ = "Could not generate encryption keys. $@";
+		return undef;
 	}
-	return ($key1, $key2);
+	else {
+		return ($key1, $key2);
+	}
+
 }
 
 #
@@ -392,15 +405,32 @@ sub _compress {
 	my $rdata     = shift;
 	my $modulekey = $client->{_compress} || return undef;
 	my $module    = $_COMPRESS_AVAILABLE{$modulekey}{name};
+	my $newdata;
+
+	#
+	# Compress the data
+	#
 	if ($module eq 'Compress::Zlib') {
-		$$rdata = Compress::Zlib::compress($$rdata);
-		return 1;
+		$newdata = Compress::Zlib::compress($$rdata);
 	}
 	elsif ($module eq 'Compress::LZF') {
-		$$rdata = Compress::LZF::compress($$rdata);
+		$newdata = Compress::LZF::compress($$rdata);
+	}
+	else {
+		$@ = "Unknown compression module [$module] modulekey [$modulekey]";
+	}
+
+	#
+	# Finally, override reference if compression succeeded
+	#
+	if ($newdata) {
+		$$rdata = $newdata;
 		return 1;
 	}
-	return undef;
+	else {
+		return undef;
+	}
+
 }
 
 #
@@ -411,15 +441,29 @@ sub _decompress {
 	my $rdata     = shift;
 	my $modulekey = $client->{_compress};
 	my $module    = $_COMPRESS_AVAILABLE{$modulekey}{name};
+	my $newdata;
+
 	if ($module eq 'Compress::Zlib') {
-		$$rdata = Compress::Zlib::uncompress($$rdata);
-		return 1;
+		$newdata = Compress::Zlib::uncompress($$rdata);
 	}
 	elsif ($module eq 'Compress::LZF') {
-		$$rdata = Compress::LZF::decompress($$rdata);
+		$newdata = Compress::LZF::decompress($$rdata);
+	}
+	else {
+		$@ = "Unknown decompression module [$module] modulekey [$modulekey]";
+	}
+
+	#
+	# Finally, override reference if decompression succeeded
+	#
+	if ($newdata) {
+		$$rdata = $newdata;
 		return 1;
 	}
-	return undef;
+	else {
+		return undef;
+	}
+
 }
 
 #
@@ -434,6 +478,7 @@ sub _encrypt {
 	my $module            = $_ENCRYPT_AVAILABLE{$modulekey}{name};
 	my $cbc               = $_ENCRYPT_AVAILABLE{$modulekey}{cbc};
 	my $mergewithpassword = $_ENCRYPT_AVAILABLE{$modulekey}{mergewithpassword};
+	my $newdata;
 	my $temp;
 	my $publickey = $client->{_remotepublickey} || return undef;
 	my $cleanpassword;
@@ -471,27 +516,43 @@ sub _encrypt {
 		$client->{_remotepublickey} = $publickey;
 	}
 
+	#
+	# Encrypt the data into $newdata if possible
+	#
 	if ($module eq 'Crypt::RSA') {
-		$temp   = Crypt::RSA->new();
-		$$rdata = $temp->encrypt(
-			Message => $$rdata,
-			Key     => $publickey,
-			Armour  => 0,
-		  )
-		  or return undef;
-		return 1;
+		eval {
+			$temp = Crypt::RSA->new() || die "Failed to create new Crypt::RSA object for encryption: $! $@\n";
+			$newdata = $temp->encrypt(
+				Message => $$rdata,
+				Key     => $publickey,
+				Armour  => 0,
+			  )
+			  or die "Failed to encrypt data with Crypt::RSA: " . $temp->errstr() . "\n";
+		};
 	}
 	elsif ($module eq 'Crypt::CipherSaber') {
-		$temp   = Crypt::CipherSaber->new($publickey);
-		$$rdata = $temp->encrypt($$rdata);
-		return 1;
+		$temp    = Crypt::CipherSaber->new($publickey);
+		$newdata = $temp->encrypt($$rdata);
 	}
 	elsif ($cbc) {
 		$temp = Crypt::CBC->new($publickey, $module);
-		$$rdata = $temp->encrypt($$rdata);
+		$newdata = $temp->encrypt($$rdata);
+	}
+	else {
+		$@ = "Unknown encryption module [$module] modulekey [$modulekey]";
+	}
+
+	#
+	# Finally, override reference if encryption succeeded
+	#
+	if ($newdata) {
+		$$rdata = $newdata;
 		return 1;
 	}
-	return undef;
+	else {
+		return undef;
+	}
+
 }
 
 #
@@ -504,6 +565,7 @@ sub _decrypt {
 	my $module            = $_ENCRYPT_AVAILABLE{$modulekey}{name};
 	my $cbc               = $_ENCRYPT_AVAILABLE{$modulekey}{cbc};
 	my $mergewithpassword = $_ENCRYPT_AVAILABLE{$modulekey}{mergewithpassword};
+	my $newdata;
 	my $temp;
 	my $privatekey = $client->{_localprivatekey} || return undef;
 	my $cleanpassword;
@@ -517,7 +579,7 @@ sub _decrypt {
 	}
 
 	#
-	# IF there is a password for the connection, and we're using Symmetric encryption, we include the password
+	# If there is a password for the connection, and we're using Symmetric encryption, we include the password
 	# in the decryption key used
 	#
 	if ($mergewithpassword && defined $cleanpassword && length($cleanpassword) && $client->{_authenticated} && !$client->{_negotiating} && $client->{_version} >= 0.15) {
@@ -532,28 +594,63 @@ sub _decrypt {
 			return undef;
 		}
 	}
+	if ($privatekey =~ /^(\%[0-9A-F]{2})+$/) {
 
+		#
+		# In the case of binary keys (such as RSA's) they're ascii-armored, we need to decrypt them
+		#
+		$privatekey = _asc2bin($privatekey);
+	}
+
+	#
+	# Decrypt the data
+	#
 	if ($module eq 'Crypt::RSA') {
-		$temp   = Crypt::RSA->new();
-		$$rdata = $temp->decrypt(
-			Cyphertext => $$rdata,
-			Key        => $privatekey,
-			Armour     => 0,
-		  )
-		  or return undef;
-		return 1;
+		eval {
+			if (!ref($privatekey))
+			{
+				if ($privatekey =~ /bless/) {
+
+					# We need to deserialize the private key with Crypt::RSA::Key::Private's undocumented deserialize function
+					$temp = Crypt::RSA::Key::Private->new() or die "Failed to initialize empty Crypt::RSA::Key::Private object\n";
+					$privatekey = $temp->deserialize(String => [$privatekey]) or die "Failed to deserialize Crypt::RSA private key\n";
+				}
+				else {
+					die "The Crypt::RSA private key is absolutely unusable\n";
+				}
+			}
+			$temp = Crypt::RSA->new() || die "Failed to create new Crypt::RSA object for decryption: $! $@\n";
+			$newdata = $temp->decrypt(
+				Cyphertext => $$rdata,
+				Key        => $privatekey,
+				Armour     => 0,
+			  )
+			  or die "Failed to decrypt data with Crypt::RSA : " . $temp->errstr() . "\n";
+		};
 	}
 	elsif ($module eq 'Crypt::CipherSaber') {
-		$temp   = Crypt::CipherSaber->new($privatekey);
-		$$rdata = $temp->decrypt($$rdata);
-		return 1;
+		$temp    = Crypt::CipherSaber->new($privatekey);
+		$newdata = $temp->decrypt($$rdata);
 	}
 	elsif ($cbc) {
 		$temp = Crypt::CBC->new($privatekey, $module);
-		$$rdata = $temp->decrypt($$rdata);
+		$newdata = $temp->decrypt($$rdata);
+	}
+	else {
+		$@ = "Unknown encryption module [$module] modulekey [$modulekey]";
+	}
+
+	#
+	# Finally, override reference if decryption succeeded
+	#
+	if ($newdata) {
+		$$rdata = $newdata;
 		return 1;
 	}
-	return undef;
+	else {
+		return undef;
+	}
+
 }
 
 #
@@ -715,7 +812,6 @@ sub _client_negotiate {
 				#
 				# New compatability method
 				#
-				undef $@;
 				eval { $temp = thaw(_asc2bin($P[1])); };
 				if (!$temp || $@) {
 					$@ = "Error thawing compatability reference: $! $@ -- This may be because you're using binary-image-incompatible versions of the Storable module.  Please update the Storable module on both ends othe the connection to the same latest stable version.";
@@ -764,47 +860,79 @@ sub _client_negotiate {
 			#
 			# Encryption module
 			#
-			$tempprivate = _asc2bin($P[2]);
-			$tempscalar  = _asc2bin($P[3]);
-
-			#
-			# Sometimes the tempprivate is frozen. If we can thaw it, let's do it:
-			#
-			undef $@;
-			eval { $temp = thaw $tempprivate };
-			if (!$@) {
-				$tempprivate = $temp;
+			if ($client->{_donotencryptwith}{ $P[0] }) {
+				$data = "NO\x00I do not encrypt with this module";
 			}
-			$client->{_encrypt}         = $P[0];
-			$client->{_localprivatekey} = $tempprivate;
-			if (_decrypt($client, \$tempscalar) && $tempscalar eq $client->{_compatabilityscalar}) {
+			elsif (!$client->{_donotencrypt}) {
 
 				#
-				# This is a viable module that we can decrypt.
+				# Let's see if we can handle decrypting this module
 				#
-				($temppublic, $tempprivate) = _genkey($P[0], 1);
-				$client->{_remotepublickey} = $temppublic;
-				if (_encrypt($client, \$tempscalar)) {
-					$data = "EM\x00$P[0]\x00" . $_ENCRYPT_AVAILABLE{ $P[0] }{version} . "\x00" . _bin2asc(ref($tempprivate) ? nfreeze $tempprivate : $tempprivate) . "\x00" . _bin2asc($tempscalar);
+				$tempprivate = _asc2bin($P[2]);
+				$tempscalar  = _asc2bin($P[3]);
+
+				#
+				# Sometimes the tempprivate is frozen. If we can thaw it, let's do it:
+				#
+				eval { $temp = thaw $tempprivate };
+				if (!$@) {
+					$tempprivate = $temp;
 				}
-				delete $client->{_remotepublickey};
+				$client->{_encrypt}         = $P[0];
+				$client->{_localprivatekey} = $tempprivate;
+				if (_decrypt($client, \$tempscalar) && $tempscalar eq $client->{_compatabilityscalar}) {
+
+					#
+					# This is a viable module that we can decrypt.
+					#
+					($temppublic, $tempprivate) = _genkey($P[0], 1);
+					if ($temppublic && $tempprivate) {
+
+						#
+						# I created a keypair with that module type successfully
+						#
+						$client->{_remotepublickey} = $temppublic;
+						if (_encrypt($client, \$tempscalar)) {
+							$data = "EM\x00$P[0]\x00" . $_ENCRYPT_AVAILABLE{ $P[0] }{version} . "\x00" . _bin2asc(ref($tempprivate) ? nfreeze $tempprivate : $tempprivate) . "\x00" . _bin2asc($tempscalar);
+						}
+						delete $client->{_remotepublickey};
+					}
+					else {
+
+						#
+						# Failed to create a keypair - no way I could encrypt with that
+						#
+						$data = "NO\x00$@";
+					}
+				}
+				else {
+
+					#
+					# Failed to decrypt message from server
+					#
+					$data = "NO\x00$@";
+				}
+				delete $client->{_encrypt};
+				delete $client->{_localprivatekey};
 			}
 			else {
 
 				#
-				# Failed to decrypt message from server
+				# I was told not to encrypt
 				#
-				$data = "NO";
+				$data = "NO\x00I do not encrypt";
+
 			}
-			delete $client->{_encrypt};
-			delete $client->{_localprivatekey};
 		}
 		elsif ($command eq "EU") {
 
 			#
 			# Encryption Use
 			#
-			if (!$client->{_donotencrypt}) {
+			if ($client->{_donotencryptwith}{ $P[0] }) {
+				$data = "NO\x00I do not encrypt with this module";
+			}
+			elsif (!$client->{_donotencrypt}) {
 				$temp2 = $P[0];
 				$data  = "EU\x00$temp2";
 				$evl   = '$client->{_encrypt} = $temp2;';
@@ -813,7 +941,7 @@ sub _client_negotiate {
 				$evl .= ' return("RETURN0"); ';
 			}
 			else {
-				$data = "NO";
+				$data = "NO\x00I do not encrypt";
 			}
 		}
 		elsif ($command eq "EA") {
@@ -847,38 +975,57 @@ sub _client_negotiate {
 			#
 			# Compression module
 			#
-			$tempscalar = _asc2bin($P[2]);
-			$client->{_compress} = $P[0];
-			if (_decompress($client, \$tempscalar) && $tempscalar eq $client->{_compatabilityscalar}) {
+			if ($client->{_donotcompresswith}{ $P[0] }) {
+				$data = "NO\x00I do not compress with this module";
+			}
+			elsif (!$client->{_donotcompress}) {
 
 				#
-				# This is a viable module that we can decompress.
+				# Let's see if we can decompress this
 				#
-				if (_compress($client, \$tempscalar)) {
-					$data = "CM\x00$P[0]\x00" . $_COMPRESS_AVAILABLE{ $P[0] }{version} . "\x00" . _bin2asc($tempscalar);
+				$tempscalar = _asc2bin($P[2]);
+				$client->{_compress} = $P[0];
+				if (_decompress($client, \$tempscalar) && $tempscalar eq $client->{_compatabilityscalar}) {
+
+					#
+					# This is a viable module that we can decompress.
+					#
+					if (_compress($client, \$tempscalar)) {
+						$data = "CM\x00$P[0]\x00" . $_COMPRESS_AVAILABLE{ $P[0] }{version} . "\x00" . _bin2asc($tempscalar);
+					}
 				}
+				else {
+
+					#
+					# Failed to decompress message from server
+					#
+					$data = "NO\x00$@";
+				}
+				delete $client->{_compress};
 			}
 			else {
 
 				#
-				# Failed to decompress message from server
+				# I was told not to compress
 				#
-				$data = "NO";
+				$data = "NO\x00I do not compress";
 			}
-			delete $client->{_compress};
 		}
 		elsif ($command eq "CU") {
 
 			#
 			# Compression Use
 			#
-			if (!$client->{_donotcompress}) {
+			if ($client->{_donotcompresswith}{ $P[0] }) {
+				$data = "NO\x00I do not compress with this module";
+			}
+			elsif (!$client->{_donotcompress}) {
 				$temp2 = $P[0];
 				$data  = "CU\x00$temp2";
 				$evl   = '$client->{_compress} = $temp2;';
 			}
 			else {
-				$data = "NO";
+				$data = "NO\x00I do not compress";
 			}
 		}
 		elsif ($command eq "CA") {
@@ -909,7 +1056,7 @@ sub _client_negotiate {
 			#
 			# No Operation (do nothing)
 			#
-			$data = "NO";
+			$data = "NO\x00I don't understand you";
 		}
 		if (defined $data && !_send($client, $data, 0)) {
 			$@ = "Error negotiating with server: Could not send : $@";
@@ -994,40 +1141,57 @@ sub _serverclient_negotiate {
 			#
 			# Encryption module
 			#
-			$tempprivate = _asc2bin($P[2]);
-			$tempscalar  = _asc2bin($P[3]);
+			if ($client->{_donotencryptwith}{ $P[0] }) {
 
-			#
-			# Sometimes the tempprivate is frozen. If we can thaw it, let's do it:
-			#
-			undef $@;
-			eval { $temp = thaw $tempprivate };
-			if (!$@) {
-				$tempprivate = $temp;
+				#
+				# I was told not to encrypt with this module
+				#
 			}
-			$client->{_encrypt}         = $P[0];
-			$client->{_localprivatekey} = $tempprivate;
-			if (_decrypt($client, \$tempscalar) && $tempscalar eq $client->{_compatabilityscalar}) {
+			elsif (!$client->{_donotencrypt}) {
 
 				#
-				# This is a viable module that I (the server) can decrypt
-				# Since this is the second-reply to my EM, I know that the client can also decrypt using this module
-				# So we use it !
+				# Let's see if we can decrypt this module
 				#
-				unshift (@{ $client->{_negotiating_commands} }, "EU\x00$P[0]");
+				$tempprivate = _asc2bin($P[2]);
+				$tempscalar  = _asc2bin($P[3]);
 
 				#
-				# Yank out any future EMs we were going to send the client since they're weaker
+				# Sometimes the tempprivate is frozen. If we can thaw it, let's do it:
 				#
-				$client->{_negotiating_commands} = [ grep { $_ !~ /^EM\x00/ } @{ $client->{_negotiating_commands} } ];
+				eval { $temp = thaw $tempprivate };
+				if (!$@) {
+					$tempprivate = $temp;
+				}
+				$client->{_encrypt}         = $P[0];
+				$client->{_localprivatekey} = $tempprivate;
+				if (_decrypt($client, \$tempscalar) && $tempscalar eq $client->{_compatabilityscalar}) {
+
+					#
+					# This is a viable module that I (the server) can decrypt
+					# Since this is the second-reply to my EM, I know that the client can also decrypt using this module
+					# So we use it !
+					#
+					unshift (@{ $client->{_negotiating_commands} }, "EU\x00$P[0]");
+
+					#
+					# Yank out any future EMs we were going to send the client since they're weaker
+					#
+					$client->{_negotiating_commands} = [ grep { $_ !~ /^EM\x00/ } @{ $client->{_negotiating_commands} } ];
+				}
+				delete $client->{_localprivatekey};
+				delete $client->{_encrypt};
+
+				#
+				# Don't try EAs after this - we know the client supports EMs
+				#
+				$client->{_negotiatedencryptcompatability} = 1;
 			}
-			delete $client->{_localprivatekey};
-			delete $client->{_encrypt};
+			else {
 
-			#
-			# Don't try EAs after this - we know the client supports EMs
-			#
-			$client->{_negotiatedencryptcompatability} = 1;
+				#
+				# I was told not to encrypt
+				#
+			}
 		}
 		elsif ($command eq "CP") {
 
@@ -1090,28 +1254,44 @@ sub _serverclient_negotiate {
 			#
 			# Compression module
 			#
-			$tempscalar = _asc2bin($P[2]);
-			$client->{_compress} = $P[0];
-			if (_decompress($client, \$tempscalar) && $tempscalar eq $client->{_compatabilityscalar}) {
+			if ($client->{_donotcompresswith}{ $P[0] }) {
 
-				#
-				# This is a viable module that I (the server) can decompress
-				# Since this is the second-reply to my CM, I know that the client can also decrypt using this module
-				# So we use it !
-				#
-				unshift (@{ $client->{_negotiating_commands} }, "CU\x00$P[0]");
-
-				#
-				# Yank out any future CMs we were going to send the client since they're weaker
-				#
-				$client->{_negotiating_commands} = [ grep { $_ !~ /^CM\x00/ } @{ $client->{_negotiating_commands} } ];
+				# I was told not to compress with this module
 			}
-			delete $client->{_compress};
+			elsif (!$client->{_donotcompress}) {
 
-			#
-			# Don't try CAs after this - we know the client supports CMs
-			#
-			$client->{_negotiatedcompresscompatability} = 1;
+				#
+				# Let's see if we can decompress this module
+				#
+				$tempscalar = _asc2bin($P[2]);
+				$client->{_compress} = $P[0];
+				if (_decompress($client, \$tempscalar) && $tempscalar eq $client->{_compatabilityscalar}) {
+
+					#
+					# This is a viable module that I (the server) can decompress
+					# Since this is the second-reply to my CM, I know that the client can also decrypt using this module
+					# So we use it !
+					#
+					unshift (@{ $client->{_negotiating_commands} }, "CU\x00$P[0]");
+
+					#
+					# Yank out any future CMs we were going to send the client since they're weaker
+					#
+					$client->{_negotiating_commands} = [ grep { $_ !~ /^CM\x00/ } @{ $client->{_negotiating_commands} } ];
+				}
+				delete $client->{_compress};
+
+				#
+				# Don't try CAs after this - we know the client supports CMs
+				#
+				$client->{_negotiatedcompresscompatability} = 1;
+			}
+			else {
+
+				#
+				# I was told not to compress
+				#
+			}
 		}
 		elsif ($command eq "CU") {
 
@@ -1172,6 +1352,7 @@ sub _serverclient_negotiate_sendnext {
 	my $data;
 	my $class = $client;
 	my ($temppublic, $tempprivate, $tempscalar);
+	my $key;
 	$class =~ s/=.*//g;
 
 	if (!defined $client->{_negotiating_commands}) {
@@ -1202,13 +1383,18 @@ sub _serverclient_negotiate_sendnext {
 			#
 			# New method
 			#
-			foreach (@{ $_ENCRYPT_AVAILABLE{_order} }) {
-				($temppublic, $tempprivate) = _genkey($_, 1);
+			foreach $key (@{ $_ENCRYPT_AVAILABLE{_order} }) {
+				if ($client->{_donotencryptwith}{$key}) {
+
+					# I was told not to encrypt with this module
+					next;
+				}
+				($temppublic, $tempprivate) = _genkey($key, 1) or next;
 				$client->{_remotepublickey} = $temppublic;
-				$client->{_encrypt}         = $_;
+				$client->{_encrypt}         = $key;
 				$tempscalar = $client->{_compatabilityscalar};
 				if (_encrypt($client, \$tempscalar)) {
-					$data = "EM\x00$_\x00" . $_ENCRYPT_AVAILABLE{$_}{version} . "\x00" . _bin2asc(ref($tempprivate) ? nfreeze $tempprivate : $tempprivate) . "\x00" . _bin2asc($tempscalar);
+					$data = "EM\x00$key\x00" . $_ENCRYPT_AVAILABLE{$key}{version} . "\x00" . _bin2asc(ref($tempprivate) ? nfreeze $tempprivate : $tempprivate) . "\x00" . _bin2asc($tempscalar);
 					push (@{ $client->{_negotiating_commands} }, $data);
 				}
 				delete $client->{_remotepublickey};
@@ -1229,7 +1415,12 @@ sub _serverclient_negotiate_sendnext {
 			#
 			# New method
 			#
-			foreach (@{ $_COMPRESS_AVAILABLE{_order} }) {
+			foreach $key (@{ $_COMPRESS_AVAILABLE{_order} }) {
+				if ($client->{_donotcompresswith}{$key}) {
+
+					# I was told not to compress with this module
+					next;
+				}
 				$client->{_compress} = $_;
 				$tempscalar = $client->{_compatabilityscalar};
 				if (_compress($client, \$tempscalar)) {
@@ -1264,7 +1455,7 @@ sub _serverclient_negotiate_sendnext {
 		#
 		# We've already negotiated through compatability. No need to re-negotiate based on versions
 		#
-		$data = "NO";
+		$data = "NO\x00Already negotiated through compatability";
 	}
 	if (!defined $data) {
 		return undef;
@@ -1338,6 +1529,7 @@ sub _new_client {
 	my $temp;
 	my $remoteip;
 	my $remoteport;
+	my $key;
 	my $timeout = $para{timeout} || 30;
 	$class =~ s/=.*//g;
 
@@ -1397,6 +1589,32 @@ sub _new_client {
 	$self->{_localpublickey}    = "";
 	$self->{_data}              = [];
 
+	#
+	# Populate donotcompresswith with the keys of the supplied module names
+	#
+	$self->{_donotcompresswith} = {};
+	if (ref($para{donotcompresswith}) ne "ARRAY") {
+		$para{donotcompresswith} = [ $para{donotcompresswith} ];
+	}
+	foreach $key (keys %_COMPRESS_AVAILABLE) {
+		if ($key ne "_order" && grep { $_COMPRESS_AVAILABLE{$key}{name} eq $_ } @{ $para{donotcompresswith} }) {
+			$self->{_donotcompresswith}{$key} = 1;
+		}
+	}
+
+	#
+	# Populate donotencryptwith with the keys of the supplied module names
+	#
+	$self->{_donotencryptwith} = {};
+	if (ref($para{donotencryptwith}) ne "ARRAY") {
+		$para{donotencryptwith} = [ $para{donotencryptwith} ];
+	}
+	foreach $key (keys %_ENCRYPT_AVAILABLE) {
+		if ($key ne "_order" && grep { $_ENCRYPT_AVAILABLE{$key}{name} eq $_ } @{ $para{donotencryptwith} }) {
+			$self->{_donotencryptwith}{$key} = 1;
+		}
+	}
+
 	bless($self, $class);
 
 	if ($self->{_mode} eq "client") {
@@ -1423,6 +1641,7 @@ sub _new_server {
 	my $class = shift;
 	my %para  = @_;
 	my $sock;
+	my $key;
 	my $self = {};
 	if (!$para{port}) {
 		$@ = "Invalid port";
@@ -1451,14 +1670,41 @@ sub _new_server {
 	$self->{_clientip}      = {};
 
 	#
+	# Populate donotcompresswith with the keys of the supplied module names
+	#
+	$self->{_donotcompresswith} = {};
+	if (ref($para{donotcompresswith}) ne "ARRAY") {
+		$para{donotcompresswith} = [ $para{donotcompresswith} ];
+	}
+	foreach $key (keys %_COMPRESS_AVAILABLE) {
+		if ($key ne "_order" && grep { $_COMPRESS_AVAILABLE{$key}{name} eq $_ } @{ $para{donotcompresswith} }) {
+			$self->{_donotcompresswith}{$key} = 1;
+		}
+	}
+
+	#
+	# Populate donotencryptwith with the keys of the supplied module names
+	#
+	$self->{_donotencryptwith} = {};
+	if (ref($para{donotencryptwith}) ne "ARRAY") {
+		$para{donotencryptwith} = [ $para{donotencryptwith} ];
+	}
+	foreach $key (keys %_ENCRYPT_AVAILABLE) {
+		if ($key ne "_order" && grep { $_ENCRYPT_AVAILABLE{$key}{name} eq $_ } @{ $para{donotencryptwith} }) {
+			$self->{_donotencryptwith}{$key} = 1;
+		}
+	}
+
+	#
 	# To avoid key-gen delays while running, let's create global RSA keypairs right now
 	#
-	if (!$self->{_donotencrypt}) {
+	if (!$self->{_donotencrypt} && !$self->{_donotencryptwith}{'B'}) {
 		if (!_generateglobalkeypair('Crypt::RSA')) {
 			$@ = "Could not generate global Crypt::RSA keypairs. $@";
 			return undef;
 		}
 	}
+
 	bless($self, $class);
 	return $self;
 }
@@ -1771,9 +2017,19 @@ Note that as of Net::EasyTCP version 0.20, this parameter is fairly useless sinc
 Set to 1 to forcefully disable L<compression|COMPRESSION AND ENCRYPTION> even if the appropriate module(s) are found.
 (Optional)
 
+=item donotcompresswith
+
+Set to a scalar or an arrayref of compression module(s) you'd like to avoid compressing with.  For example, if you do not want to use Compress::LZF, you can do so by utilizing this option.
+(Optional)
+
 =item donotencrypt
 
 Set to 1 to forcefully disable L<encryption|COMPRESSION AND ENCRYPTION> even if the appropriate module(s) are found.
+(Optional)
+
+=item donotencryptwith
+
+Set to a scalar or an arrayref of encryption module(s) you'd like to avoid encrypting with.  For example, Crypt::RSA takes a long time to initialize keys and encrypt/decrypt, so you can avoid using it by utilizing this option.
 (Optional)
 
 =item host
@@ -1964,7 +2220,7 @@ To find out which module(s) have been negotiated for use you can use the compres
 
 * Note that if symmetric cryptography is used, then it is highly recommended to also use the "password" feature on your servers and clients; since then the "password" will, aside from authentication,  be also used in the "secret key" to encrypt the data.  Without a password, the secret key has to be transmitted to the other side during the handshake, significantly lowering the overall security of the data.
 
-If the above modules are installed but you want to forcefully disable compression or encryption, supply the "donotcompress" and/or "donotencrypt" keys to the new() constructor.
+If the above modules are installed but you want to forcefully disable compression or encryption, supply the "donotcompress" and/or "donotencrypt" keys to the new() constructor.  If you would like to forcefully disable the use of only some modules, supply the "donotcompresswith" and/or "donotencryptwith" keys to the new() constructor.  This could be used for example to disable the use of Crypt::RSA if you cannot afford the time it takes to generate it's keypairs etc...
 
 =head1 RETURN VALUES AND ERRORS
 
@@ -2236,12 +2492,14 @@ sub do_one_loop {
 				#
 				# And we make it inherit some stuff from the server :
 				#
-				$self->{_clients}->{$clientsock}->{_donotencrypt}  = $self->{_donotencrypt};
-				$self->{_clients}->{$clientsock}->{_donotcompress} = $self->{_donotcompress};
-				$self->{_clients}->{$clientsock}->{_password}      = $self->{_password};
-				$self->{_clients}->{$clientsock}->{_callbacks}     = $self->{_callbacks};
-				$self->{_clients}->{$clientsock}->{_welcome}       = $self->{_welcome};
-				$self->{_clients}->{$clientsock}->{_selector}      = $self->{_selector};
+				$self->{_clients}->{$clientsock}->{_donotencrypt}      = $self->{_donotencrypt};
+				$self->{_clients}->{$clientsock}->{_donotencryptwith}  = $self->{_donotencryptwith};
+				$self->{_clients}->{$clientsock}->{_donotcompress}     = $self->{_donotcompress};
+				$self->{_clients}->{$clientsock}->{_donotcompresswith} = $self->{_donotcompresswith};
+				$self->{_clients}->{$clientsock}->{_password}          = $self->{_password};
+				$self->{_clients}->{$clientsock}->{_callbacks}         = $self->{_callbacks};
+				$self->{_clients}->{$clientsock}->{_welcome}           = $self->{_welcome};
+				$self->{_clients}->{$clientsock}->{_selector}          = $self->{_selector};
 			}
 		}
 		else {
@@ -2311,7 +2569,7 @@ sub do_one_loop {
 	#
 	# Now we re-generate the RSA keys if it's been over an hour
 	#
-	if (!$self->{_donotencrypt} && ((time - $self->{_lastglobalkeygentime}) >= 3600)) {
+	if (!$self->{_donotencrypt} && !$self->{_donotencryptwith}{"B"} && ((time - $self->{_lastglobalkeygentime}) >= 3600)) {
 		if (!_generateglobalkeypair('Crypt::RSA')) {
 			$@ = "Could not generate global Crypt::RSA keypairs. $@";
 			return undef;
