@@ -13,10 +13,10 @@ BEGIN {
 	select(STDOUT);
 	print "1..14\n";
 	}
-END {print "not ok 1\n" unless $loaded;}
+END {print "not ok\n" unless $loaded;}
 use Net::EasyTCP;
 $loaded = 1;
-print "ok 1\n";
+print "ok\n";
 
 ######################### End of black magic.
 

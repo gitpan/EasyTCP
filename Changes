@@ -1,5 +1,14 @@
 Revision history
 
+0.08
+	- Bugfix release.  An internal variable was assigned to both Crypt::Rijndael and Crypt::RC6
+	  (they should have received different variables).  This causes negotiations to often fail
+	  when a client has RC6 and not Rijndael and the server had the opposite, or vice-versa.
+	- Implemented encryption and compression module version checking.  The client will fail
+	  to connect to a server if the agreed-on encryption or compression module has a version
+	  mismatch.  The failure error in $@ will advise of so.
+
+
 0.07
 	- Minor changes to the negotiation routine, including improved security during encryption key
 	  exchange.

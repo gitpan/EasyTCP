@@ -1,7 +1,7 @@
 package Net::EasyTCP;
 
 use strict;
-use vars qw($VERSION @ISA @EXPORT @EXPORT_OK $_SERIAL $_SELECTOR @_COMPRESS_AVAILABLE @_ENCRYPT_AVAILABLE);
+use vars qw($VERSION @ISA @EXPORT @EXPORT_OK $_SERIAL $_SELECTOR %_COMPRESS_AVAILABLE %_ENCRYPT_AVAILABLE);
 
 use IO::Socket;
 use IO::Select;
@@ -9,44 +9,63 @@ use Storable qw(nfreeze thaw);
 
 #
 # This block's purpose is to:
-# . Put the list of available modules in @_COMPRESS_AVAILABLE and @_ENCRYPT_AVAILABLE
+# . Put the list of available modules in %_COMPRESS_AVAILABLE and %_ENCRYPT_AVAILABLE
 #
 BEGIN {
+	my $version;
 	my @_compress_modules = (
+		#
+		# MAKE SURE WE DO NOT EVER ASSIGN THE SAME KEY TO MORE THAN ONE MODULE, EVEN OLD ONES NO LONGER IN THE LIST
+		#
+		# HIGHEST: 2
+		#
 		['1', 'Compress::Zlib'],
 		['2', 'Compress::LZF'],
 		);
 	my @_encrypt_modules = (
+		#
+		# MAKE SURE WE DO NOT EVER ASSIGN THE SAME KEY TO MORE THAN ONE MODULE, EVEN OLD ONES NO LONGER IN THE LIST
+		#
+		# HIGHEST: A
+		#
 		['3', 'Crypt::CBC', 0],
-		['7', 'Crypt::Rijndael', 1],
-		['7', 'Crypt::RC6', 1],
+		['A', 'Crypt::Rijndael', 1],
+		['9', 'Crypt::RC6', 1],
 		['4', 'Crypt::Blowfish', 1],
 		['6', 'Crypt::DES_EDE3', 1],
 		['5', 'Crypt::DES', 1],
 		['2', 'Crypt::CipherSaber', 0],
 		);
 	my $hasCBC = 0;
+	$_COMPRESS_AVAILABLE{_order} = [];
+	$_ENCRYPT_AVAILABLE{_order} = [];
 	# Now we check the compress and encrypt arrays for existing modules
 	foreach (@_compress_modules) {
 		$@ = undef;
 		eval {
 			eval ("require $_->[1];") || die "$_->[1] not found\n";
+			$version = eval ("\$$_->[1]::VERSION;") || "unknown";
 			};
 		if (!$@) {
-			push (@_COMPRESS_AVAILABLE, $_);
+			push (@{$_COMPRESS_AVAILABLE{_order}}, $_->[0]);
+			$_COMPRESS_AVAILABLE{$_->[0]}{name} = $_->[1];
+			$_COMPRESS_AVAILABLE{$_->[0]}{version} = $version;
 			}
 		}
 	foreach (@_encrypt_modules) {
 		$@ = undef;
 		eval {
 			eval ("require $_->[1];") || die "$_->[1] not found\n";
+			$version = eval ("\$$_->[1]::VERSION;") || "unknown";
 			};
 		if (!$@) {
 			if ($_->[1] eq 'Crypt::CBC') {
 				$hasCBC = 1;
 				}
 			elsif (($hasCBC && $_->[2]) || !$_->[2]) {
-				push (@_ENCRYPT_AVAILABLE, $_);
+				push (@{$_ENCRYPT_AVAILABLE{_order}}, $_->[0]);
+				$_ENCRYPT_AVAILABLE{$_->[0]}{name} = $_->[1];
+				$_ENCRYPT_AVAILABLE{$_->[0]}{version} = $version;
 				}
 			}
 		}
@@ -60,9 +79,10 @@ require AutoLoader;
 # names by default without a very good reason. Use EXPORT_OK instead.
 # Do not simply export all your public functions/methods/constants.
 @EXPORT = qw();
-$VERSION = '0.07';
+$VERSION = '0.08';
 
 # Preloaded methods go here.
+
 
 #
 # This does very very primitive 2-way encryption
@@ -100,48 +120,42 @@ sub _callback() {
 # Returns undef on error
 #
 sub _genkey() {
-	my $methodkey = shift;
-	my $method = "";
+	my $modulekey = shift;
+	my $module = $_ENCRYPT_AVAILABLE{$modulekey}{name};
 	my $key1 = undef;
 	my $key2 = undef;
 	my $temp;
-	foreach (@_ENCRYPT_AVAILABLE) {
-		if ($methodkey eq $_->[0]) {
-			$method = $_->[1];
-			last;
-			}
-		}
-	if ($method eq 'Crypt::CipherSaber') {
+	if ($module eq 'Crypt::CipherSaber') {
 		for (1..32) {
 			$key1 .= chr(int(rand(93))+33);
 			}
 		$key2 = $key1;
 		}
-	elsif ($method eq 'Crypt::Rijndael') {
+	elsif ($module eq 'Crypt::Rijndael') {
 		for (1..32) {
 			$key1 .= chr(int(rand(93))+33);
 			}
 		$key2 = $key1;
 		}
-	elsif ($method eq 'Crypt::RC6') {
+	elsif ($module eq 'Crypt::RC6') {
 		for (1..32) {
 			$key1 .= chr(int(rand(93))+33);
 			}
 		$key2 = $key1;
 		}
-	elsif ($method eq 'Crypt::Blowfish') {
+	elsif ($module eq 'Crypt::Blowfish') {
 		for (1..56) {
 			$key1 .= chr(int(rand(93))+33);
 			}
 		$key2 = $key1;
 		}
-	elsif ($method eq 'Crypt::DES_EDE3') {
+	elsif ($module eq 'Crypt::DES_EDE3') {
 		for (1..24) {
 			$key1 .= chr(int(rand(93))+33);
 			}
 		$key2 = $key1;
 		}
-	elsif ($method eq 'Crypt::DES') {
+	elsif ($module eq 'Crypt::DES') {
 		for (1..8) {
 			$key1 .= chr(int(rand(93))+33);
 			}
@@ -152,25 +166,19 @@ sub _genkey() {
 
 #
 # This takes client object, and a reference to a scalar
-# And if it can, compresses scalar, modifying the original, via the specified method in the client object
+# And if it can, compresses scalar, modifying the original, via the specified module in the client object
 # Returns true if successful, false if not
 #
 sub _compress() {
 	my $client = shift;
 	my $rdata = shift;
-	my $methodkey = $client->{_compress} || "";
-	my $method = "";
-	foreach (@_COMPRESS_AVAILABLE) {
-		if ($methodkey eq $_->[0]) {
-			$method = $_->[1];
-			last;
-			}
-		}
-	if ($method eq 'Compress::Zlib') {
+	my $modulekey = $client->{_compress} || return undef;
+	my $module = $_COMPRESS_AVAILABLE{$modulekey}{name};
+	if ($module eq 'Compress::Zlib') {
 		$$rdata = Compress::Zlib::compress($$rdata);
 		return 1;
 		}
-	elsif ($method eq 'Compress::LZF') {
+	elsif ($module eq 'Compress::LZF') {
 		$$rdata = Compress::LZF::compress($$rdata);
 		return 1;
 		}
@@ -183,19 +191,13 @@ sub _compress() {
 sub _decompress() {
 	my $client = shift;
 	my $rdata = shift;
-	my $methodkey = $client->{_compress};
-	my $method;
-	foreach (@_COMPRESS_AVAILABLE) {
-		if ($methodkey eq $_->[0]) {
-			$method = $_->[1];
-			last;
-			}
-		}
-	if ($method eq 'Compress::Zlib') {
+	my $modulekey = $client->{_compress};
+	my $module = $_COMPRESS_AVAILABLE{$modulekey}{name};
+	if ($module eq 'Compress::Zlib') {
 		$$rdata = Compress::Zlib::uncompress($$rdata);
 		return 1;
 		}
-	elsif ($method eq 'Compress::LZF') {
+	elsif ($module eq 'Compress::LZF') {
 		$$rdata = Compress::LZF::decompress($$rdata);
 		return 1;
 		}
@@ -204,49 +206,43 @@ sub _decompress() {
 
 #
 # This takes client object, and a reference to a scalar
-# And if it can, encrypts scalar, modifying the original, via the specified method in the client object
+# And if it can, encrypts scalar, modifying the original, via the specified module in the client object
 # Returns true if successful, false if not
 #
 sub _encrypt() {
 	my $client = shift;
 	my $rdata = shift;
-	my $methodkey = $client->{_encrypt} || return undef;
-	my $method = "";
+	my $modulekey = $client->{_encrypt} || return undef;
+	my $module = $_ENCRYPT_AVAILABLE{$modulekey}{name};
 	my $temp;
 	my $publickey = $client->{_remotepublickey} || return undef;
-	foreach (@_ENCRYPT_AVAILABLE) {
-		if ($methodkey eq $_->[0]) {
-			$method = $_->[1];
-			last;
-			}
-		}
-	if ($method eq 'Crypt::CipherSaber') {
+	if ($module eq 'Crypt::CipherSaber') {
 		$temp = Crypt::CipherSaber->new($publickey);
 		$$rdata = $temp->encrypt($$rdata);
 		return 1;
 		}
-	elsif ($method eq 'Crypt::Rijndael') {
-		$temp = Crypt::CBC->new($publickey, $method);
+	elsif ($module eq 'Crypt::Rijndael') {
+		$temp = Crypt::CBC->new($publickey, $module);
 		$$rdata = $temp->encrypt($$rdata);
 		return 1;
 		}
-	elsif ($method eq 'Crypt::RC6') {
-		$temp = Crypt::CBC->new($publickey, $method);
+	elsif ($module eq 'Crypt::RC6') {
+		$temp = Crypt::CBC->new($publickey, $module);
 		$$rdata = $temp->encrypt($$rdata);
 		return 1;
 		}
-	elsif ($method eq 'Crypt::Blowfish') {
-		$temp = Crypt::CBC->new($publickey, $method);
+	elsif ($module eq 'Crypt::Blowfish') {
+		$temp = Crypt::CBC->new($publickey, $module);
 		$$rdata = $temp->encrypt($$rdata);
 		return 1;
 		}
-	elsif ($method eq 'Crypt::DES_EDE3') {
-		$temp = Crypt::CBC->new($publickey, $method);
+	elsif ($module eq 'Crypt::DES_EDE3') {
+		$temp = Crypt::CBC->new($publickey, $module);
 		$$rdata = $temp->encrypt($$rdata);
 		return 1;
 		}
-	elsif ($method eq 'Crypt::DES') {
-		$temp = Crypt::CBC->new($publickey, $method);
+	elsif ($module eq 'Crypt::DES') {
+		$temp = Crypt::CBC->new($publickey, $module);
 		$$rdata = $temp->encrypt($$rdata);
 		return 1;
 		}
@@ -259,43 +255,37 @@ sub _encrypt() {
 sub _decrypt() {
 	my $client = shift;
 	my $rdata = shift;
-	my $methodkey = $client->{_encrypt} || return undef;
-	my $method;
+	my $modulekey = $client->{_encrypt} || return undef;
+	my $module = $_ENCRYPT_AVAILABLE{$modulekey}{name};
 	my $temp;
 	my $privatekey = $client->{_localprivatekey} || return undef;
-	foreach (@_ENCRYPT_AVAILABLE) {
-		if ($methodkey eq $_->[0]) {
-			$method = $_->[1];
-			last;
-			}
-		}
-	if ($method eq 'Crypt::CipherSaber') {
+	if ($module eq 'Crypt::CipherSaber') {
 		$temp = Crypt::CipherSaber->new($privatekey);
 		$$rdata = $temp->decrypt($$rdata);
 		return 1;
 		}
-	elsif ($method eq 'Crypt::Rijndael') {
-		$temp = Crypt::CBC->new($privatekey, $method);
+	elsif ($module eq 'Crypt::Rijndael') {
+		$temp = Crypt::CBC->new($privatekey, $module);
 		$$rdata = $temp->decrypt($$rdata);
 		return 1;
 		}
-	elsif ($method eq 'Crypt::RC6') {
-		$temp = Crypt::CBC->new($privatekey, $method);
+	elsif ($module eq 'Crypt::RC6') {
+		$temp = Crypt::CBC->new($privatekey, $module);
 		$$rdata = $temp->decrypt($$rdata);
 		return 1;
 		}
-	elsif ($method eq 'Crypt::Blowfish') {
-		$temp = Crypt::CBC->new($privatekey, $method);
+	elsif ($module eq 'Crypt::Blowfish') {
+		$temp = Crypt::CBC->new($privatekey, $module);
 		$$rdata = $temp->decrypt($$rdata);
 		return 1;
 		}
-	elsif ($method eq 'Crypt::DES_EDE3') {
-		$temp = Crypt::CBC->new($privatekey, $method);
+	elsif ($module eq 'Crypt::DES_EDE3') {
+		$temp = Crypt::CBC->new($privatekey, $module);
 		$$rdata = $temp->decrypt($$rdata);
 		return 1;
 		}
-	elsif ($method eq 'Crypt::DES') {
-		$temp = Crypt::CBC->new($privatekey, $method);
+	elsif ($module eq 'Crypt::DES') {
+		$temp = Crypt::CBC->new($privatekey, $module);
 		$$rdata = $temp->decrypt($$rdata);
 		return 1;
 		}
@@ -316,6 +306,7 @@ sub _client_negotiate() {
 	my $data;
 	my $temp;
 	my $temp2;
+	my $version;
 	my $evl;
 	my $starttime = time;
 	while ((time-$starttime) < $timeout) {
@@ -334,6 +325,18 @@ sub _client_negotiate() {
 			}
 		if ($command eq "PF") {
 			$@ = "Server rejected supplied password";
+			return undef;
+			}
+		elsif ($command eq "CVF") {
+			$temp = $_COMPRESS_AVAILABLE{$client->{_compress}}{name};
+			$version = $_COMPRESS_AVAILABLE{$client->{_compress}}{version};
+			$@ = "Compression version mismatch for $temp : Local version $version remote version $P[0] : Upgrade both to same version or run the server in 'donotcompress' mode";
+			return undef;
+			}
+		elsif ($command eq "EVF") {
+			$temp = $_ENCRYPT_AVAILABLE{$client->{_encrypt}}{name};
+			$version = $_ENCRYPT_AVAILABLE{$client->{_encrypt}}{version};
+			$@ = "Encryption version mismatch for $temp : Local version $version remote version $P[0] : Upgrade both to same version or run the server in 'donotencrypt' mode";
 			return undef;
 			}
 		elsif ($command eq "EN") {
@@ -355,27 +358,33 @@ sub _client_negotiate() {
 			$data .= ($client->{_version} >= 0.07) ? &_munge($client->{_localpublickey}) : $client->{_localpublickey};
 			}
 		elsif ($command eq "EA") {
-CN1:			foreach $temp (@P) {
-				foreach (@_ENCRYPT_AVAILABLE) {
-					if ($temp eq $_->[0]) {
-						$temp2 = $_->[0];
-						last CN1;
-						}
+			$temp2 = undef;
+			$version = undef;
+			foreach $temp (@P) {
+				if ($_ENCRYPT_AVAILABLE{$temp}) {
+					$temp2 = $temp;
+					$version = $_ENCRYPT_AVAILABLE{$temp}{version};
+					last;
 					}
 				}
-			$data = "EU\x00$temp2";
+			$temp2 ||= "";
+			$version ||= "";
+			$data = "EU\x00$temp2\x00$version";
 			$evl = '$client->{_encrypt} = $temp2; ($client->{_localpublickey}, $client->{_localprivatekey}) = &_genkey($client->{_encrypt});';
 			}
 		elsif ($command eq "CA") {
-CN2:			foreach $temp (@P) {
-				foreach (@_COMPRESS_AVAILABLE) {
-					if ($temp eq $_->[0]) {
-						$temp2 = $_->[0];
-						last CN2;
-						}
+			$temp2 = undef;
+			$version = undef;
+			foreach $temp (@P) {
+				if ($_COMPRESS_AVAILABLE{$temp}) {
+					$temp2 = $temp;
+					$version = $_COMPRESS_AVAILABLE{$temp}{version};
+					last;
 					}
 				}
-			$data = "CU\x00$temp2";
+			$temp2 ||= "";
+			$version ||= "";
+			$data = "CU\x00$temp2\x00$version";
 			$evl = '$client->{_compress} = $temp2;';
 			}
 		else {
@@ -408,16 +417,20 @@ CN2:			foreach $temp (@P) {
 #
 sub _serverclient_negotiate() {
 	my $client = shift;
-	my $reply = $client->data(1);
+	my $reply;
 	my $temp;
 	my @P;
 	my $command;
+	my $version;
 
 	if (!$client->{_negotiating}) {
 		return 1;
 		}
+	
+	$reply = $client->data(1);
+	if (!defined $reply) { $reply = "" };
 
-	if (defined $reply) {
+	if (length($reply)) {
 		# We're parsing a reply the other end sent us
 		@P = split(/\x00/, $reply);
 		$command = shift(@P);
@@ -432,6 +445,10 @@ sub _serverclient_negotiate() {
 			$temp = "EK\x00";
 			$temp .= ($client->{_version} >= 0.07) ? &_munge($client->{_localpublickey}) : $client->{_localpublickey};
 			unshift(@{$client->{_negotiating_commands}}, $temp);
+			$version = $_ENCRYPT_AVAILABLE{$P[0]}{version};
+			if ($version ne $P[1]) {
+				unshift(@{$client->{_negotiating_commands}}, "EVF\x00$version");
+				}
 			}
 		elsif ($command eq "CP") {
 			if (&_munge($P[0]) eq crypt($client->{_password}, $client->{_cryptsalt}) ) {
@@ -447,6 +464,10 @@ sub _serverclient_negotiate() {
 			}
 		elsif ($command eq "CU") {
 			$client->{_compress} = $P[0];
+			$version = $_COMPRESS_AVAILABLE{$P[0]}{version};
+			if ($version ne $P[1]) {
+				unshift(@{$client->{_negotiating_commands}}, "CVF\x00$version");
+				}
 			}
 		elsif ($command eq "EK") {
 			$client->{_remotepublickey} = ($client->{_version} >= 0.07) ? &_munge($P[0]) : $P[0];
@@ -461,6 +482,9 @@ sub _serverclient_negotiate() {
 				delete $client->{_negotiating_commands};
 				return 1;
 				}
+			}
+		else {
+			# received unknown reply. so what..
 			}
 		}
 	elsif ($client->{_negotiating_lastevent} ne "sent") {
@@ -490,8 +514,8 @@ sub _serverclient_negotiate_sendnext() {
 		push (@{$client->{_negotiating_commands}}, $data);
 		$data = "VE\x00$VERSION";
 		push (@{$client->{_negotiating_commands}}, $data);
-		if (length($client->{_password})) {
-			if (length($client->{_cryptsalt}) != 2) {
+		if (defined $client->{_password}) {
+			if (!exists $client->{_cryptsalt}) {
 				$client->{_cryptsalt} = "";
 				for (1..2) {
 					$client->{_cryptsalt} .= chr(int(rand(93))+33);
@@ -500,16 +524,20 @@ sub _serverclient_negotiate_sendnext() {
 			$data = "CS\x00" . &_munge($client->{_cryptsalt});
 			push (@{$client->{_negotiating_commands}}, $data);
 			}
-		$data = "EA";
-		foreach (@_ENCRYPT_AVAILABLE) {
-			$data .= "\x00$_->[0]";
+		if (!$client->{_donotencrypt}) {
+			$data = "EA";
+			foreach (@{$_ENCRYPT_AVAILABLE{_order}}) {
+				$data .= "\x00$_";
+				}
+			push (@{$client->{_negotiating_commands}}, $data);
 			}
-		push (@{$client->{_negotiating_commands}}, $data);
-		$data = "CA";
-		foreach (@_COMPRESS_AVAILABLE) {
-			$data .= "\x00$_->[0]";
+		if (!$client->{_donotcompress}) {
+			$data = "CA";
+			foreach (@{$_COMPRESS_AVAILABLE{_order}}) {
+				$data .= "\x00$_";
+				}
+			push (@{$client->{_negotiating_commands}}, $data);
 			}
-		push (@{$client->{_negotiating_commands}}, $data);
 		push (@{$client->{_negotiating_commands}}, "EN");
 		}
 
@@ -1158,7 +1186,7 @@ Perl(1), L<IO::Socket>, L<IO::Select>, L<Compress::Zlib>, L<Compress::LZF>, L<Cr
 
 =head1 COPYRIGHT
 
-Copyright (C) 2001 Mina Naguib.  All rights reserved.  Use is subject to the Perl license.
+Copyright (C) 2001-2002 Mina Naguib.  All rights reserved.  Use is subject to the Perl license.
 
 =cut
 
@@ -1517,16 +1545,11 @@ sub mode() {
 #
 sub encryption() {
 	my $self = shift;
-	my $methodkey = $self->{_encrypt};
-	if ($self->{_donotencrypt} || !$methodkey) {
+	my $modulekey = $self->{_encrypt};
+	if ($self->{_donotencrypt} || !$modulekey) {
 		return undef;
 		}
-	foreach (@_ENCRYPT_AVAILABLE) {
-		if ($_->[0] eq $methodkey) {
-			return ($_->[1]);
-			}
-		}
-	return undef;
+	return $_ENCRYPT_AVAILABLE{$modulekey}{name} || undef;
 	}
 
 
@@ -1535,16 +1558,11 @@ sub encryption() {
 #
 sub compression() {
 	my $self = shift;
-	my $methodkey = $self->{_compress};
-	if ($self->{_donotcompress} || !$methodkey) {
+	my $modulekey = $self->{_compress};
+	if ($self->{_donotcompress} || !$modulekey) {
 		return undef;
 		}
-	foreach (@_COMPRESS_AVAILABLE) {
-		if ($_->[0] eq $methodkey) {
-			return ($_->[1]);
-			}
-		}
-	return undef;
+	return $_COMPRESS_AVAILABLE{$modulekey}{name} || undef;
 	}
 
 #
