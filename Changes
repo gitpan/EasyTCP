@@ -1,5 +1,12 @@
 Revision history
 
+0.09
+	- Implemented Crypt::RSA support.  This is the first supported module that implements
+	  assymmetric cryptography.  Users who are serious about the security of their en-route
+	  data are strongly advised to upgrade and make use of this encryption module.
+	- Small bugfix where client-negotiation-timeouts were not reported correctly.
+
+
 0.08
 	- Bugfix release.  An internal variable was assigned to both Crypt::Rijndael and Crypt::RC6
 	  (they should have received different variables).  This causes negotiations to often fail

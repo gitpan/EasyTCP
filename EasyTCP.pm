@@ -13,6 +13,7 @@ use Storable qw(nfreeze thaw);
 #
 BEGIN {
 	my $version;
+	my $hasCBC;
 	my @_compress_modules = (
 		#
 		# MAKE SURE WE DO NOT EVER ASSIGN THE SAME KEY TO MORE THAN ONE MODULE, EVEN OLD ONES NO LONGER IN THE LIST
@@ -26,8 +27,9 @@ BEGIN {
 		#
 		# MAKE SURE WE DO NOT EVER ASSIGN THE SAME KEY TO MORE THAN ONE MODULE, EVEN OLD ONES NO LONGER IN THE LIST
 		#
-		# HIGHEST: A
+		# HIGHEST: B
 		#
+		['B', 'Crypt::RSA', 0],
 		['3', 'Crypt::CBC', 0],
 		['A', 'Crypt::Rijndael', 1],
 		['9', 'Crypt::RC6', 1],
@@ -36,7 +38,7 @@ BEGIN {
 		['5', 'Crypt::DES', 1],
 		['2', 'Crypt::CipherSaber', 0],
 		);
-	my $hasCBC = 0;
+	$hasCBC = 0;
 	$_COMPRESS_AVAILABLE{_order} = [];
 	$_ENCRYPT_AVAILABLE{_order} = [];
 	# Now we check the compress and encrypt arrays for existing modules
@@ -65,6 +67,7 @@ BEGIN {
 			elsif (($hasCBC && $_->[2]) || !$_->[2]) {
 				push (@{$_ENCRYPT_AVAILABLE{_order}}, $_->[0]);
 				$_ENCRYPT_AVAILABLE{$_->[0]}{name} = $_->[1];
+				$_ENCRYPT_AVAILABLE{$_->[0]}{cbc} = $_->[2];
 				$_ENCRYPT_AVAILABLE{$_->[0]}{version} = $version;
 				}
 			}
@@ -79,10 +82,28 @@ require AutoLoader;
 # names by default without a very good reason. Use EXPORT_OK instead.
 # Do not simply export all your public functions/methods/constants.
 @EXPORT = qw();
-$VERSION = '0.08';
+$VERSION = '0.09';
 
 # Preloaded methods go here.
 
+#
+# This takes any string and returns it in ascii format
+#
+sub _bin2asc() {
+	my $data = shift;
+	$data =~ s/(.)/ '%' . sprintf('%02x',ord($1)) /ges;
+	$data = uc($data);
+	return $data;
+	}
+
+#
+# This does the opposite of _bin2asc
+#
+sub _asc2bin() {
+	my $data = shift;
+	$data =~ s/\%([0-9A-F]{2})/ sprintf("%c",hex($1)) /ges;
+	return $data;
+	}
 
 #
 # This does very very primitive 2-way encryption
@@ -90,6 +111,7 @@ $VERSION = '0.08';
 #
 sub _munge() {
 	my $data = shift;
+	return $data;
 	my $c;
 	my $t;
 	for (0..length($data)-1) {
@@ -125,11 +147,22 @@ sub _genkey() {
 	my $key1 = undef;
 	my $key2 = undef;
 	my $temp;
-	if ($module eq 'Crypt::CipherSaber') {
-		for (1..32) {
-			$key1 .= chr(int(rand(93))+33);
+	if ($module eq 'Crypt::RSA') {
+		if ($_ENCRYPT_AVAILABLE{$modulekey}{localpublickey} && $_ENCRYPT_AVAILABLE{$modulekey}{localprivatekey}) {
+			$key1 = $_ENCRYPT_AVAILABLE{$modulekey}{localpublickey};
+			$key2 = $_ENCRYPT_AVAILABLE{$modulekey}{localprivatekey};
 			}
-		$key2 = $key1;
+		else {
+			$temp = Crypt::RSA->new();
+			($key1, $key2) = $temp->keygen (
+				Size		=>	512,
+				Verbosity	=>	0,
+				)
+				or $@ = $temp->errstr();
+			if ($key1) {
+				$key1 = &_bin2asc(nfreeze($key1));
+				}
+			}
 		}
 	elsif ($module eq 'Crypt::Rijndael') {
 		for (1..32) {
@@ -157,6 +190,12 @@ sub _genkey() {
 		}
 	elsif ($module eq 'Crypt::DES') {
 		for (1..8) {
+			$key1 .= chr(int(rand(93))+33);
+			}
+		$key2 = $key1;
+		}
+	elsif ($module eq 'Crypt::CipherSaber') {
+		for (1..32) {
 			$key1 .= chr(int(rand(93))+33);
 			}
 		$key2 = $key1;
@@ -214,34 +253,29 @@ sub _encrypt() {
 	my $rdata = shift;
 	my $modulekey = $client->{_encrypt} || return undef;
 	my $module = $_ENCRYPT_AVAILABLE{$modulekey}{name};
+	my $cbc = $_ENCRYPT_AVAILABLE{$modulekey}{cbc};
 	my $temp;
 	my $publickey = $client->{_remotepublickey} || return undef;
-	if ($module eq 'Crypt::CipherSaber') {
+	if ($publickey =~ /^(\%[0-9A-F]{2})+$/) {
+		$publickey = thaw(&_asc2bin($publickey)) || return undef;
+		$client->{_remotepublickey} = $publickey;
+		}
+	if ($module eq 'Crypt::RSA') {
+		$temp = Crypt::RSA->new();
+		$$rdata = $temp->encrypt(
+			Message		=>	$$rdata,
+			Key		=>	$publickey,
+			Armour		=>	0,
+			)
+			or return undef;
+		return 1;
+		}
+	elsif ($module eq 'Crypt::CipherSaber') {
 		$temp = Crypt::CipherSaber->new($publickey);
 		$$rdata = $temp->encrypt($$rdata);
 		return 1;
 		}
-	elsif ($module eq 'Crypt::Rijndael') {
-		$temp = Crypt::CBC->new($publickey, $module);
-		$$rdata = $temp->encrypt($$rdata);
-		return 1;
-		}
-	elsif ($module eq 'Crypt::RC6') {
-		$temp = Crypt::CBC->new($publickey, $module);
-		$$rdata = $temp->encrypt($$rdata);
-		return 1;
-		}
-	elsif ($module eq 'Crypt::Blowfish') {
-		$temp = Crypt::CBC->new($publickey, $module);
-		$$rdata = $temp->encrypt($$rdata);
-		return 1;
-		}
-	elsif ($module eq 'Crypt::DES_EDE3') {
-		$temp = Crypt::CBC->new($publickey, $module);
-		$$rdata = $temp->encrypt($$rdata);
-		return 1;
-		}
-	elsif ($module eq 'Crypt::DES') {
+	elsif ($cbc) {
 		$temp = Crypt::CBC->new($publickey, $module);
 		$$rdata = $temp->encrypt($$rdata);
 		return 1;
@@ -257,34 +291,25 @@ sub _decrypt() {
 	my $rdata = shift;
 	my $modulekey = $client->{_encrypt} || return undef;
 	my $module = $_ENCRYPT_AVAILABLE{$modulekey}{name};
+	my $cbc = $_ENCRYPT_AVAILABLE{$modulekey}{cbc};
 	my $temp;
 	my $privatekey = $client->{_localprivatekey} || return undef;
-	if ($module eq 'Crypt::CipherSaber') {
+	if ($module eq 'Crypt::RSA') {
+		$temp = Crypt::RSA->new();
+		$$rdata = $temp->decrypt(
+			Cyphertext		=>	$$rdata,
+			Key		=>	$privatekey,
+			Armour		=>	0,
+			)
+			or return undef;
+		return 1;
+		}
+	elsif ($module eq 'Crypt::CipherSaber') {
 		$temp = Crypt::CipherSaber->new($privatekey);
 		$$rdata = $temp->decrypt($$rdata);
 		return 1;
 		}
-	elsif ($module eq 'Crypt::Rijndael') {
-		$temp = Crypt::CBC->new($privatekey, $module);
-		$$rdata = $temp->decrypt($$rdata);
-		return 1;
-		}
-	elsif ($module eq 'Crypt::RC6') {
-		$temp = Crypt::CBC->new($privatekey, $module);
-		$$rdata = $temp->decrypt($$rdata);
-		return 1;
-		}
-	elsif ($module eq 'Crypt::Blowfish') {
-		$temp = Crypt::CBC->new($privatekey, $module);
-		$$rdata = $temp->decrypt($$rdata);
-		return 1;
-		}
-	elsif ($module eq 'Crypt::DES_EDE3') {
-		$temp = Crypt::CBC->new($privatekey, $module);
-		$$rdata = $temp->decrypt($$rdata);
-		return 1;
-		}
-	elsif ($module eq 'Crypt::DES') {
+	elsif ($cbc) {
 		$temp = Crypt::CBC->new($privatekey, $module);
 		$$rdata = $temp->decrypt($$rdata);
 		return 1;
@@ -300,7 +325,7 @@ sub _decrypt() {
 sub _client_negotiate() {
 	my $client = shift;
 	my $reply;
-	my $timeout = 5;
+	my $timeout = 45;
 	my @P;
 	my $command;
 	my $data;
@@ -341,7 +366,7 @@ sub _client_negotiate() {
 			}
 		elsif ($command eq "EN") {
 			$data = "EN";
-			$evl = 'last;';
+			$evl = 'return 1;';
 			}
 		elsif ($command eq "VE") {
 			$client->{_version} = $P[0];
@@ -370,7 +395,7 @@ sub _client_negotiate() {
 			$temp2 ||= "";
 			$version ||= "";
 			$data = "EU\x00$temp2\x00$version";
-			$evl = '$client->{_encrypt} = $temp2; ($client->{_localpublickey}, $client->{_localprivatekey}) = &_genkey($client->{_encrypt});';
+			$evl = '$client->{_encrypt} = $temp2; ($client->{_localpublickey}, $client->{_localprivatekey}) = &_genkey($client->{_encrypt}) or return undef;';
 			}
 		elsif ($command eq "CA") {
 			$temp2 = undef;
@@ -395,15 +420,16 @@ sub _client_negotiate() {
 			return undef;
 			}
 		if (defined $evl) {
-			if ($evl =~ /^last/) {
-				last;
+			if ($evl =~ /^return/) {
+				return 1;
 				}
 			else {
 				eval($evl);
 				}
 			}
 		}
-	return 1;
+	$@ = "Client timed out while negotiating with server";
+	return undef;
 	}
 
 #
@@ -680,6 +706,14 @@ sub _new_server() {
 	$self->{_donotcompress} = ($para{donotcompress}) ? 1 : 0;
 	$self->{_donotencrypt} = ($para{donotencrypt}) ? 1 : 0;
 	$self->{_clients} = {};
+	#
+	# To avoid key-gen delays while running, let's create RSA keypairs right now
+	#
+	foreach (keys %_ENCRYPT_AVAILABLE) {
+		if ($_ ne "_order" && $_ENCRYPT_AVAILABLE{$_}{name} eq 'Crypt::RSA') {
+			($_ENCRYPT_AVAILABLE{$_}{localpublickey}, $_ENCRYPT_AVAILABLE{$_}{localprivatekey}) = &_genkey($_) or return undef;
+			}
+		}
 	bless($self, $class);
 	return $self;
 	}
@@ -1116,7 +1150,7 @@ Clients and servers written using this class will automatically compress and/or 
 
 Compression will be automatically enabled if one (or more) of: L<Compress::Zlib|Compress::Zlib> or L<Compress::LZF|Compress::LZF> are installed on both the client and the server.
 
-Encryption will be automatically enabled if one (or more) of: L<Crypt::Rijndael|Crypt::Rijndael>* L<Crypt::RC6|Crypt::RC6>* or L<Crypt::Blowfish|Crypt::Blowfish>* or L<Crypt::DES_EDE3|Crypt::DES_EDE3>* or L<Crypt::DES|Crypt::DES>* or L<Crypt::CipherSaber|Crypt::CipherSaber> are installed on both the client and the server.
+Encryption will be automatically enabled if one (or more) of: L<Crypt::RSA|Crypt::RSA> or L<Crypt::Rijndael|Crypt::Rijndael>* or L<Crypt::RC6|Crypt::RC6>* or L<Crypt::Blowfish|Crypt::Blowfish>* or L<Crypt::DES_EDE3|Crypt::DES_EDE3>* or L<Crypt::DES|Crypt::DES>* or L<Crypt::CipherSaber|Crypt::CipherSaber> are installed on both the client and the server.
 
 Preference to the compression/encryption method used is determind by availablity checking following the order in which they are presented in the above lists.
 
@@ -1182,7 +1216,7 @@ Mina Naguib, <mnaguib@cpan.org>
 
 =head1 SEE ALSO
 
-Perl(1), L<IO::Socket>, L<IO::Select>, L<Compress::Zlib>, L<Compress::LZF>, L<Crypt::CBC>, L<Crypt::DES_EDE3>, L<Crypt::Blowfish>, L<Crypt::DES>, L<Crypt::CipherSaber>, defined()
+Perl(1), L<IO::Socket>, L<IO::Select>, L<Compress::Zlib>, L<Compress::LZF>, L<Crypt::RSA>, L<Crypt::CBC>, L<Crypt::Rijndael>, L<Crypt::RC6>, L<Crypt::Blowfish>, L<Crypt::DES_EDE3>, L<Crypt::DES>, L<Crypt::CipherSaber>, defined()
 
 =head1 COPYRIGHT
 
@@ -1258,7 +1292,7 @@ sub start() {
 	my $realdata;
 	my $result;
 	my $error;
-	my $negotiatingtimeout = 10;
+	my $negotiatingtimeout = 45;
 	$_SELECTOR = new IO::Select;
 	if ($self->{_mode} ne "server") {
 		$@ = "$self->{_mode} cannot use method start()";
