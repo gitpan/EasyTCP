@@ -61,7 +61,7 @@ BEGIN {
 		$@ = undef;
 		eval {
 			eval ("require $_->[1];") || die "$_->[1] not found\n";
-			$version = eval ("\$$_->[1]::VERSION;") || "unknown";
+			$version = eval ("\$$_->[1]::VERSION;") || die "Failed to determine version for $_->[1]\n";
 			};
 		if (!$@) {
 			push (@{$_COMPRESS_AVAILABLE{_order}}, $_->[0]);
@@ -76,7 +76,7 @@ BEGIN {
 		$@ = undef;
 		eval {
 			eval ("require $_->[1];") || die "$_->[1] not found\n";
-			$version = eval ("\$$_->[1]::VERSION;") || "unknown";
+			$version = eval ("\$$_->[1]::VERSION;") || die "Failed to determine version for $_->[1]\n";
 			};
 		if (!$@) {
 			if ($_->[1] eq 'Crypt::CBC') {
@@ -98,7 +98,7 @@ BEGIN {
 		$@ = undef;
 		eval {
 			eval ("require $_->[1];") || die "$_->[1] not found\n";
-			$version = eval ("\$$_->[1]::VERSION;") || "unknown";
+			$version = eval ("\$$_->[1]::VERSION;") || die "Failed to determine version for $_->[1]\n";
 			};
 		if (!$@) {
 			push (@{$_MISC_AVAILABLE{_order}}, $_->[0]);
@@ -116,7 +116,7 @@ require AutoLoader;
 # names by default without a very good reason. Use EXPORT_OK instead.
 # Do not simply export all your public functions/methods/constants.
 @EXPORT = qw();
-$VERSION = '0.15';
+$VERSION = '0.16';
 
 # Preloaded methods go here.
 
@@ -438,12 +438,17 @@ sub _genrandstring() {
 	my $key;
 	my $avoid;
 	my $module;
+	my $version;
 	#
 	# First, we try one of the fancy randomness modules possibly in %_MISC_AVAILABLE
 	#
 	foreach (@{$_MISC_AVAILABLE{_order}}) {
 		$module = $_MISC_AVAILABLE{$_}{name};
-		if ($module eq "Crypt::Random") {
+		$version = $_MISC_AVAILABLE{$_}{version};
+		#
+		# Note that Crypt::Random has the makerandom_octet function ONLY in 0.34 and higher
+		#
+		if ($module eq "Crypt::Random" && $version >= 0.34) {
 			for (0..33,127..255) {
 				$avoid .= chr($_);
 				}

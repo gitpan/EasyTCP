@@ -1,5 +1,10 @@
 Revision history
 
+0.16
+	- Fixed a bug that was introduced in 0.15 where the module died if Crypt::Random existed
+	  but it was older than 0.34 or modules IT depended on (such as Math::Pari) didn't exist.
+
+
 0.15
 	- Implemented stronger number generator (Crypt::Random).  This module will be used instead
 	  of perl's built-in rand() if it's available.
