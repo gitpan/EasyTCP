@@ -1,6 +1,15 @@
 Revision history
 
 
+0.02  Thu Jan 10 16:30:00 2002
+	- Implemented transparent compression
+	- Implemented transparent encryption
+	- Internal protocol majorly re-designed to accomodate new and future features
+	- Re-wrote the test routine to use fork() and simulate a real-world scenario
+	- Minor bugfixes in receive()
+	- Documentation changes to include all new features
+
 0.01  Mon Dec 31 11:37:43 2001
 	- original version; created by h2xs 1.19
 
+	
