@@ -82,7 +82,7 @@ require AutoLoader;
 # names by default without a very good reason. Use EXPORT_OK instead.
 # Do not simply export all your public functions/methods/constants.
 @EXPORT = qw();
-$VERSION = '0.12';
+$VERSION = '0.13';
 
 # Preloaded methods go here.
 
@@ -135,7 +135,7 @@ sub _munge() {
 		$t = vec($c, 0, 4);
 		vec($c, 0, 4) = vec($c, 1, 4);
 		vec($c, 1, 4) = $t;
-		substr($data, $_, 1, $c);
+		substr($data, $_, 1) = $c;
 		}
 	$data = reverse($data);
 	return $data;
@@ -715,10 +715,16 @@ sub _new_client() {
 		return undef;
 		}
 	$sock->autoflush(1);
-	$temp = getpeername($sock) || (($@ = "Error getting peername") && return undef);
-	($remoteport, $remoteip) = sockaddr_in($temp) or (($@ = "Error getting socket address") && return undef);
-	$self->{_remoteip} = inet_ntoa($remoteip) || (($@ = "Error determing remote IP") && return undef);
-	$self->{_remoteport} = $remoteport;
+	if ($para{_remoteport} && $para{_remoteip}) {
+		$self->{_remoteport} = $para{_remoteport};
+		$self->{_remoteip} = $para{_remoteip};
+		}
+	else {
+		$temp = getpeername($sock) || (($@ = "Error getting peername") && return undef);
+		($remoteport, $remoteip) = sockaddr_in($temp) or (($@ = "Error getting socket address") && return undef);
+		$self->{_remoteip} = inet_ntoa($remoteip) || (($@ = "Error determing remote IP") && return undef);
+		$self->{_remoteport} = $remoteport;
+		}
 	$self->{_sock} = $sock;
 	$self->{_password} = $para{password};
 	$self->{_donotcompress} = ($para{donotcompress}) ? 1 : 0;
@@ -767,6 +773,7 @@ sub _new_server() {
 	$self->{_donotcompress} = ($para{donotcompress}) ? 1 : 0;
 	$self->{_donotencrypt} = ($para{donotencrypt}) ? 1 : 0;
 	$self->{_clients} = {};
+	$self->{_clientip} = {};
 	#
 	# To avoid key-gen delays while running, let's create global RSA keypairs right now
 	#
@@ -817,7 +824,7 @@ sub _extractdata() {
 	if (length($data) != $lendata) {
 		return undef;
 		}
-	substr($client->{_databuffer}, 0, 2 + $lenlen + $lendata, '');
+	substr($client->{_databuffer}, 0, 2 + $lenlen + $lendata) = '';
 	if ($encrypted) {
 		&_decrypt($client, \$data) || return undef;
 		}
@@ -898,7 +905,8 @@ sub _send() {
 	$len = length($finaldata);
 	$temp = 0;
 	while (length($finaldata)) {
-		$packet = substr($finaldata, 0, $packetsize, '');
+		$packet = substr($finaldata, 0, $packetsize);
+		substr($finaldata, 0, $packetsize) = '';
 		$temp += syswrite($sock, $packet, length($packet));
 		}
 	if ($temp != $len) {
@@ -1108,6 +1116,12 @@ B<[S] = Available to objects created as mode "server">
 
 =over 4
 
+=item addclientip(@array)
+
+B<[S]> Adds an IP address (or IP addresses) to the list of allowed clients to a server.  If this is done, the server will not accept connections from clients not in it's list.
+
+The compliment of this function is deleteclientip() .
+
 =item callback(%hash)
 
 See setcallback()
@@ -1127,6 +1141,12 @@ B<[C]> Returns the name of the module used as the compression module for this co
 =item data()
 
 B<[C]> Retrieves the previously-retrieved data associated with a client object.  This method is typically used from inside the callback sub associated with the "data" event, since the callback sub is passed nothing more than a client object.
+
+=item deleteclientip(@array)
+
+B<[S]> Deletes an IP address (or IP addresses) to the list of allowed clients to a server.  The IP address (or IP addresses) supplied will no longer be able to connect to the server.
+
+The compliment of this function is addclientip() .
 
 =item disconnect()
 
@@ -1327,6 +1347,43 @@ sub callback() {
 	}
 
 #
+# This sub adds an ip address(es) to the list of valid IPs a server can accept connections
+# from.
+#
+sub addclientip() {
+	my $self = shift;
+	my @ips = @_;
+	if ($self->{_mode} ne "server") {
+		$@ = "$self->{_mode} cannot use method setcallback()";
+		return undef;
+		}
+	foreach (@ips) {
+		$self->{_clientip}{$_} = 1;
+		}
+	return 1;
+	}
+
+
+#
+# This sub does the opposite of addclient(), it removes an ip address(es) from the list
+# of valid IPs a server can accept connections from.
+#
+sub deleteclientip() {
+	my $self = shift;
+	my @ips = @_;
+	if ($self->{_mode} ne "server") {
+		$@ = "$self->{_mode} cannot use method setcallback()";
+		return undef;
+		}
+	foreach (@ips) {
+		delete $self->{_clientip}{$_};
+		}
+	return 1;
+	}
+
+
+# 
+#
 # This method modifies the _callback_XYZ in a server object. These are the routines
 # the server calls when an event (data, connect, disconnect) happens
 #
@@ -1363,6 +1420,9 @@ sub start() {
 	my $error;
 	my $negotiatingtimeout = 45;
 	my $lastglobalkeygentime;
+	my $peername;
+	my $remoteport;
+	my $remoteip;
 	$_SELECTOR = new IO::Select;
 	if ($self->{_mode} ne "server") {
 		$@ = "$self->{_mode} cannot use method start()";
@@ -1382,15 +1442,34 @@ MLOOP:	while (!$self->{_requeststop}) {
 					$error = "Error while accepting new connection: $!";
 					last MLOOP;
 					}
-				$_SELECTOR->add($clientsock);
-				# We create a new client object and make it inherit some of our properties
-				$self->{_clients}->{$clientsock} = &_new_client($self, "_sock" => $clientsock);
-				$self->{_clients}->{$clientsock}->{_serial} = ++$_SERIAL;
-				$self->{_clients}->{$clientsock}->{_donotencrypt} = $self->{_donotencrypt};
-				$self->{_clients}->{$clientsock}->{_donotcompress} = $self->{_donotcompress};
-				$self->{_clients}->{$clientsock}->{_password} = $self->{_password};
-				$self->{_clients}->{$clientsock}->{_callbacks} = $self->{_callbacks};
-				$self->{_clients}->{$clientsock}->{_welcome} = $self->{_welcome};
+				# We get remote IP and port, we'll need them to see if client is allowed or not
+				$peername = getpeername($clientsock) or next;
+				($remoteport, $remoteip) = sockaddr_in($peername) or next;
+				$remoteip = inet_ntoa($remoteip) or next;
+				# We create a new client object
+				# We see if client is allowed to connect to us
+				if (scalar(keys %{$self->{_clientip}}) && !$self->{_clientip}{$remoteip}) {
+					# Client's IP is not allowed to connect to us
+					close ($clientsock);
+					}
+				else {
+					# We add it to our pool
+					$_SELECTOR->add($clientsock);
+					# We create a new client object:
+					$self->{_clients}->{$clientsock} = &_new_client(
+						$self,
+						"_sock"		=>	$clientsock,
+						"_remoteport"	=>	$remoteport,
+						"_remoteip"	=>	$remoteip
+						);
+					# And we make it inherit some stuff from the server
+					$self->{_clients}->{$clientsock}->{_serial} = ++$_SERIAL;
+					$self->{_clients}->{$clientsock}->{_donotencrypt} = $self->{_donotencrypt};
+					$self->{_clients}->{$clientsock}->{_donotcompress} = $self->{_donotcompress};
+					$self->{_clients}->{$clientsock}->{_password} = $self->{_password};
+					$self->{_clients}->{$clientsock}->{_callbacks} = $self->{_callbacks};
+					$self->{_clients}->{$clientsock}->{_welcome} = $self->{_welcome};
+					}
 				}
 			else {
 				# One of the client sockets are ready

@@ -1,5 +1,11 @@
 Revision history
 
+0.13	- Fixed a bug where supplying 4 parameters to substr() choked on older versions of perl
+          substr() calls now only use 3 paramaters.
+	- Added 2 new methods, addclientip() and deleteclientip() which may be used to restrict
+	  a server to only accept connections from certain IP addresses.
+
+
 0.12	- Fixed a bug where if Crypt::RSA was not installed the test suite would fail.
 	- The welcome message viewable via telnet-ting into the server is now formatted nicer.
 
