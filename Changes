@@ -1,5 +1,18 @@
 Revision history
 
+0.07
+	- Minor changes to the negotiation routine, including improved security during encryption key
+	  exchange.
+	- Implemented a "password" feature where a server will require a password from the client before
+	  accepting connection.
+	- Added 2 methods (remoteip() and remoteport()) to retrieve the IP address/port of the remote
+	  connection.
+	- Added support to Crypt::Rijndael encryption.
+	- Added support to Crypt::RC6 encryption.
+	- Changes to the send and receive routines to allow the server to better manage large amounts
+	  of data from several clients at the same time.
+
+
 0.06
 	- Re-organized many internal functions to better manage memmory and free up memory no longer used
 	  sooner.

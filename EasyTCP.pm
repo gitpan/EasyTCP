@@ -18,6 +18,8 @@ BEGIN {
 		);
 	my @_encrypt_modules = (
 		['3', 'Crypt::CBC', 0],
+		['7', 'Crypt::Rijndael', 1],
+		['7', 'Crypt::RC6', 1],
 		['4', 'Crypt::Blowfish', 1],
 		['6', 'Crypt::DES_EDE3', 1],
 		['5', 'Crypt::DES', 1],
@@ -58,9 +60,28 @@ require AutoLoader;
 # names by default without a very good reason. Use EXPORT_OK instead.
 # Do not simply export all your public functions/methods/constants.
 @EXPORT = qw();
-$VERSION = '0.06';
+$VERSION = '0.07';
 
 # Preloaded methods go here.
+
+#
+# This does very very primitive 2-way encryption
+# Takes a string and returns it encrypted, or takes an encrypted string and returns plaintext
+#
+sub _munge() {
+	my $data = shift;
+	my $c;
+	my $t;
+	for (0..length($data)-1) {
+		$c = substr($data, $_, 1);
+		$t = vec($c, 0, 4);
+		vec($c, 0, 4) = vec($c, 1, 4);
+		vec($c, 1, 4) = $t;
+		substr($data, $_, 1, $c);
+		}
+	$data = reverse($data);
+	return $data;
+	}
 
 #
 # This takes a client object and a callback keyword and calls back the associated sub if possible
@@ -91,6 +112,18 @@ sub _genkey() {
 			}
 		}
 	if ($method eq 'Crypt::CipherSaber') {
+		for (1..32) {
+			$key1 .= chr(int(rand(93))+33);
+			}
+		$key2 = $key1;
+		}
+	elsif ($method eq 'Crypt::Rijndael') {
+		for (1..32) {
+			$key1 .= chr(int(rand(93))+33);
+			}
+		$key2 = $key1;
+		}
+	elsif ($method eq 'Crypt::RC6') {
 		for (1..32) {
 			$key1 .= chr(int(rand(93))+33);
 			}
@@ -192,6 +225,16 @@ sub _encrypt() {
 		$$rdata = $temp->encrypt($$rdata);
 		return 1;
 		}
+	elsif ($method eq 'Crypt::Rijndael') {
+		$temp = Crypt::CBC->new($publickey, $method);
+		$$rdata = $temp->encrypt($$rdata);
+		return 1;
+		}
+	elsif ($method eq 'Crypt::RC6') {
+		$temp = Crypt::CBC->new($publickey, $method);
+		$$rdata = $temp->encrypt($$rdata);
+		return 1;
+		}
 	elsif ($method eq 'Crypt::Blowfish') {
 		$temp = Crypt::CBC->new($publickey, $method);
 		$$rdata = $temp->encrypt($$rdata);
@@ -228,6 +271,16 @@ sub _decrypt() {
 		}
 	if ($method eq 'Crypt::CipherSaber') {
 		$temp = Crypt::CipherSaber->new($privatekey);
+		$$rdata = $temp->decrypt($$rdata);
+		return 1;
+		}
+	elsif ($method eq 'Crypt::Rijndael') {
+		$temp = Crypt::CBC->new($privatekey, $method);
+		$$rdata = $temp->decrypt($$rdata);
+		return 1;
+		}
+	elsif ($method eq 'Crypt::RC6') {
+		$temp = Crypt::CBC->new($privatekey, $method);
 		$$rdata = $temp->decrypt($$rdata);
 		return 1;
 		}
@@ -279,13 +332,27 @@ sub _client_negotiate() {
 			$@ = "Error negotiating (2)";
 			return undef;
 			}
-		if ($command eq "EN") {
+		if ($command eq "PF") {
+			$@ = "Server rejected supplied password";
+			return undef;
+			}
+		elsif ($command eq "EN") {
 			$data = "EN";
 			$evl = 'last;';
 			}
+		elsif ($command eq "VE") {
+			$client->{_version} = $P[0];
+			$data = "VE\x00$VERSION";
+			}
+		elsif ($command eq "CS") {
+			$temp = &_munge($P[0]);
+			$temp = &_munge(crypt($client->{_password}, $temp));
+			$data = "CP\x00$temp";
+			}
 		elsif ($command eq "EK") {
-			$client->{_remotepublickey} = $P[0];
-			$data = "EK\x00$client->{_localpublickey}";
+			$client->{_remotepublickey} = ($client->{_version} >= 0.07) ? &_munge($P[0]) : $P[0];
+			$data = "EK\x00";
+			$data .= ($client->{_version} >= 0.07) ? &_munge($client->{_localpublickey}) : $client->{_localpublickey};
 			}
 		elsif ($command eq "EA") {
 CN1:			foreach $temp (@P) {
@@ -342,6 +409,7 @@ CN2:			foreach $temp (@P) {
 sub _serverclient_negotiate() {
 	my $client = shift;
 	my $reply = $client->data(1);
+	my $temp;
 	my @P;
 	my $command;
 
@@ -361,19 +429,38 @@ sub _serverclient_negotiate() {
 		if ($command eq "EU") {
 			$client->{_encrypt} = $P[0];
 			($client->{_localpublickey}, $client->{_localprivatekey}) = &_genkey($client->{_encrypt});
-			unshift(@{$client->{_negotiating_commands}}, "EK\x00$client->{_localpublickey}");
+			$temp = "EK\x00";
+			$temp .= ($client->{_version} >= 0.07) ? &_munge($client->{_localpublickey}) : $client->{_localpublickey};
+			unshift(@{$client->{_negotiating_commands}}, $temp);
+			}
+		elsif ($command eq "CP") {
+			if (&_munge($P[0]) eq crypt($client->{_password}, $client->{_cryptsalt}) ) {
+				$client->{_authenticated} = 1;
+				}
+			else {
+				$client->{_authenticated} = 0;
+				unshift(@{$client->{_negotiating_commands}}, "PF");
+				}
+			}
+		elsif ($command eq "VE") {
+			$client->{_version} = $P[0];
 			}
 		elsif ($command eq "CU") {
 			$client->{_compress} = $P[0];
 			}
 		elsif ($command eq "EK") {
-			$client->{_remotepublickey} = $P[0];
+			$client->{_remotepublickey} = ($client->{_version} >= 0.07) ? &_munge($P[0]) : $P[0];
 			}
 		elsif ($command eq "EN") {
-			$client->{_negotiating} = 0;
-			delete $client->{_negotiating_lastevent};
-			delete $client->{_negotiating_commands};
-			return 1;
+			if (length($client->{_password}) && !$client->{_authenticated}) {
+				return undef;
+				}
+			else {
+				$client->{_negotiating} = 0;
+				delete $client->{_negotiating_lastevent};
+				delete $client->{_negotiating_commands};
+				return 1;
+				}
 			}
 		}
 	elsif ($client->{_negotiating_lastevent} ne "sent") {
@@ -397,7 +484,22 @@ sub _serverclient_negotiate_sendnext() {
 
 	if (!defined $client->{_negotiating_commands}) {
 		# Let's initialize the sequence of commands we send
-		push (@{$client->{_negotiating_commands}}, "\r\n\r\n\r\n\r\n\r\n\r\n\r\n\r\n::  HELLO  ::  $class VERSION $VERSION  ::  SERVER READY  ::\r\n\r\n::  $client->{_welcome}  ::\r\n");
+		$data = "\r\n\r\n\r\n\r\n\r\n\r\n\r\n\r\n";
+		$data .= "::  HELLO  ::  $class VERSION $VERSION  ::  SERVER READY  ::\r\n\r\n::  $client->{_welcome}  ::";
+		$data .= "\r\n";
+		push (@{$client->{_negotiating_commands}}, $data);
+		$data = "VE\x00$VERSION";
+		push (@{$client->{_negotiating_commands}}, $data);
+		if (length($client->{_password})) {
+			if (length($client->{_cryptsalt}) != 2) {
+				$client->{_cryptsalt} = "";
+				for (1..2) {
+					$client->{_cryptsalt} .= chr(int(rand(93))+33);
+					}
+				}
+			$data = "CS\x00" . &_munge($client->{_cryptsalt});
+			push (@{$client->{_negotiating_commands}}, $data);
+			}
 		$data = "EA";
 		foreach (@_ENCRYPT_AVAILABLE) {
 			$data .= "\x00$_->[0]";
@@ -495,6 +597,8 @@ sub _new_client() {
 	else {
 		$sock = $para{_sock};
 		$self->{_mode} = "serverclient";
+		$self->{_negotiating} = time;
+		$self->{_authenticated} = 0;
 		}
 	if (!$sock) {
 		$@ = "Could not connect to $para{host}:$para{port}: $!";
@@ -502,6 +606,7 @@ sub _new_client() {
 		}
 	$sock->autoflush(1);
 	$self->{_sock} = $sock;
+	$self->{_password} = $para{password};
 	$self->{_donotcompress} = ($para{donotcompress}) ? 1 : 0;
 	$self->{_donotencrypt} = ($para{donotencrypt}) ? 1 : 0;
 	$self->{_data} = [];
@@ -543,6 +648,7 @@ sub _new_server() {
 	$self->{_sock} = $sock;
 	$self->{_mode} = "server";
 	$self->{_welcome} = $para{welcome};
+	$self->{_password} = $para{password};
 	$self->{_donotcompress} = ($para{donotcompress}) ? 1 : 0;
 	$self->{_donotencrypt} = ($para{donotencrypt}) ? 1 : 0;
 	$self->{_clients} = {};
@@ -621,7 +727,9 @@ sub _send() {
 	my $lenlen;
 	my $len;
 	my $key;
+	my $finaldata;
 	my $packet;
+	my $packetsize = 4096;
 	my $temp;
 	my $complexstructure = ref($data);
 	if (!$sock) {
@@ -661,10 +769,15 @@ sub _send() {
 	vec($key, 7, 1) = 0;
 	# 8 BITS: LENGTH OF "DATA LENGTH STRING"
 	vec($key, 1, 8) = $lenlen;
-	# Construct the final packet and send it:
-	$packet = $key . $len . $data;
-	$temp = syswrite($sock, $packet, length($packet));
-	if ($temp != length($packet)) {
+	# Construct the final data and send it:
+	$finaldata = $key . $len . $data;
+	$len = length($finaldata);
+	$temp = 0;
+	while (length($finaldata)) {
+		$packet = substr($finaldata, 0, $packetsize, '');
+		$temp += syswrite($sock, $packet, length($packet));
+		}
+	if ($temp != $len) {
 		$@ = "Error sending data: $!";
 		return undef;
 		}
@@ -839,6 +952,11 @@ Must be set to the hostname/IP address to connect to.
 Must be set to either "client" or "server" according to the type of object you want returned.
 (Mandatory)
 
+=item password
+
+Defines a password to use for the connection.  When mode is "server" this password will be required from clients before the full connection is accepted .  When mode is "client" this is the password that the server connecting to requires.
+(Optional)
+
 =item port
 
 Must be set to the port the client connects to (if mode is "client") or to the port to listen to (if mode is "server"). If you're writing a client+server pair, they must both use the same port number.
@@ -898,6 +1016,14 @@ B<[C][S]> Identifies the mode of the object.  Returns either "client" or "server
 B<[C]> Receives data sent to the client by a server and returns it.  It will block until data is received or until a certain timeout of inactivity (no data transferring) has occurred.
 
 It accepts an optional parameter, a timeout value in seconds.  If none is supplied it will default to 300.
+
+=item remoteip()
+
+B<[C]> Returns the IP address of the host on the other end of the connection.
+
+=item remoteport()
+
+B<[C]> Returns the port of the host on the other end of the connection.
 
 =item running()
 
@@ -962,13 +1088,13 @@ Clients and servers written using this class will automatically compress and/or 
 
 Compression will be automatically enabled if one (or more) of: L<Compress::Zlib|Compress::Zlib> or L<Compress::LZF|Compress::LZF> are installed on both the client and the server.
 
-Encryption will be automatically enabled if one (or more) of: L<Crypt::DES_EDE3|Crypt::DES_EDE3> or L<Crypt::Blowfish|Crypt::Blowfish> or L<Crypt::DES|Crypt::DES> or L<Crypt::CipherSaber|Crypt::CipherSaber> are installed on both the client and the server.
+Encryption will be automatically enabled if one (or more) of: L<Crypt::Rijndael|Crypt::Rijndael>* L<Crypt::RC6|Crypt::RC6>* or L<Crypt::Blowfish|Crypt::Blowfish>* or L<Crypt::DES_EDE3|Crypt::DES_EDE3>* or L<Crypt::DES|Crypt::DES>* or L<Crypt::CipherSaber|Crypt::CipherSaber> are installed on both the client and the server.
 
 Preference to the compression/encryption method used is determind by availablity checking following the order in which they are presented in the above lists.
 
 To find out which module(s) have been negotiated for use you can use the compression() and encryption() methods.
 
-Note that for this class's purposes, L<Crypt::CBC|Crypt::CBC> is a requirement to use L<Crypt::DES_EDE3|Crypt::DES_EDE3> or L<Crypt::Blowfish|Crypt::Blowfish> or L<Crypt::DES|Crypt::DES>.  So eventhough you may have these modules installed on both the client and the server, they will not be used unless L<Crypt::CBC|Crypt::CBC> is also installed on both ends.
+* Note that for this class's purposes, L<Crypt::CBC|Crypt::CBC> is a requirement to use any of the encryption modules with a * next to it's name in the above list.  So eventhough you may have these modules installed on both the client and the server, they will not be used unless L<Crypt::CBC|Crypt::CBC> is also installed on both ends.
 
 If the above modules are installed but you want to forcefully disable compression or encryption, supply the "donotcompress" and/or "donotencrypt" keys to the new() constructor.
 
@@ -1123,19 +1249,19 @@ MLOOP:	while (!$self->{_requeststop}) {
 					$error = "Error while accepting new connection: $!";
 					last MLOOP;
 					}
-				$_SERIAL++;
 				$_SELECTOR->add($clientsock);
+				# We create a new client object and make it inherit some of our properties
 				$self->{_clients}->{$clientsock} = &_new_client($self, "_sock" => $clientsock);
+				$self->{_clients}->{$clientsock}->{_serial} = ++$_SERIAL;
 				$self->{_clients}->{$clientsock}->{_donotencrypt} = $self->{_donotencrypt};
 				$self->{_clients}->{$clientsock}->{_donotcompress} = $self->{_donotcompress};
+				$self->{_clients}->{$clientsock}->{_password} = $self->{_password};
 				$self->{_clients}->{$clientsock}->{_callbacks} = $self->{_callbacks};
 				$self->{_clients}->{$clientsock}->{_welcome} = $self->{_welcome};
-				$self->{_clients}->{$clientsock}->{_serial} = $_SERIAL;
-				$self->{_clients}->{$clientsock}->{_negotiating} = time;
 				}
 			else {
 				# One of the client sockets are ready
-				$result = sysread($_, $tempdata, 65536);
+				$result = sysread($_, $tempdata, 4096);
 				$serverclient = $self->{_clients}->{$_};
 				if (!defined $result) {
 					# Error somewhere during reading
@@ -1296,7 +1422,7 @@ sub receive() {
 				last;
 				}
 			}
-		$result = sysread($self->{_sock}, $temp, 65536);
+		$result = sysread($self->{_sock}, $temp, 4096);
 		if ($result == 0) {
 			# Socket closed
 			$@ = "Socket closed when attempted reading";
@@ -1461,5 +1587,52 @@ sub clients() {
 	else {
 		return undef;
 		}
+	}
+
+
+#
+# This takes a client object and returns the IP address of the remote connection
+#
+sub remoteip() {
+	my $self = shift;
+	my $sock = $self->{_sock};
+	my $temp;
+	if ($self->{_mode} ne "client" && $self->{_mode} ne "serverclient") {
+		$@ = "$self->{_mode} cannot use method remoteip()";
+		return undef;
+		}
+	if (!$sock) {
+		$@ = "Internal error, cannot determing socket attached to client object";
+		return undef;
+		}
+	if (!$self->{_remoteip}) {
+		$temp = getpeername($sock) || return undef;
+		($temp) = (sockaddr_in($temp))[1] || return undef;
+		$self->{_remoteip} = inet_ntoa($temp);
+		}
+	return $self->{_remoteip};
+	}
+
+#
+# This takes a client object and returns the PORT of the remote connection
+#
+sub remoteport() {
+	my $self = shift;
+	my $sock = $self->{_sock};
+	my $temp;
+	if ($self->{_mode} ne "client" && $self->{_mode} ne "serverclient") {
+		$@ = "$self->{_mode} cannot use method remoteport()";
+		return undef;
+		}
+	if (!$sock) {
+		$@ = "Internal error, cannot determing socket attached to client object";
+		return undef;
+		}
+	if (!$self->{_remoteport}) {
+		$temp = getpeername($sock) || return undef;
+		($temp) = (sockaddr_in($temp))[0] || return undef;
+		$self->{_remoteport} = $temp;
+		}
+	return $self->{_remoteport};
 	}
 
