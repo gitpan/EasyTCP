@@ -18,7 +18,7 @@ BEGIN {
 		#
 		# MAKE SURE WE DO NOT EVER ASSIGN THE SAME KEY TO MORE THAN ONE MODULE, EVEN OLD ONES NO LONGER IN THE LIST
 		#
-		# HIGHEST: 2
+		# HIGHEST EVER USED: 2
 		#
 		['1', 'Compress::Zlib'],
 		['2', 'Compress::LZF'],
@@ -27,7 +27,7 @@ BEGIN {
 		#
 		# MAKE SURE WE DO NOT EVER ASSIGN THE SAME KEY TO MORE THAN ONE MODULE, EVEN OLD ONES NO LONGER IN THE LIST
 		#
-		# HIGHEST: B
+		# HIGHEST EVER USED: B
 		#
 		['B', 'Crypt::RSA', 0],
 		['3', 'Crypt::CBC', 0],
@@ -82,7 +82,7 @@ require AutoLoader;
 # names by default without a very good reason. Use EXPORT_OK instead.
 # Do not simply export all your public functions/methods/constants.
 @EXPORT = qw();
-$VERSION = '0.09';
+$VERSION = '0.10';
 
 # Preloaded methods go here.
 
@@ -147,6 +147,7 @@ sub _genkey() {
 	my $key1 = undef;
 	my $key2 = undef;
 	my $temp;
+	$@ = undef;
 	if ($module eq 'Crypt::RSA') {
 		if ($_ENCRYPT_AVAILABLE{$modulekey}{localpublickey} && $_ENCRYPT_AVAILABLE{$modulekey}{localprivatekey}) {
 			$key1 = $_ENCRYPT_AVAILABLE{$modulekey}{localpublickey};
@@ -199,6 +200,12 @@ sub _genkey() {
 			$key1 .= chr(int(rand(93))+33);
 			}
 		$key2 = $key1;
+		}
+	else {
+		$@ = "Unknown encryption module [$module] modulekey [$modulekey]";
+		}
+	if (!$key1 || !$key2) {
+		$@ = "Could not generate encryption keys. $@";
 		}
 	return ($key1, $key2);
 	}
@@ -337,8 +344,7 @@ sub _client_negotiate() {
 	while ((time-$starttime) < $timeout) {
 		$reply = $client->receive($timeout, 1);
 		if (!defined $reply) {
-			$@ = "Error negotiating (1)";
-			return undef;
+			last;
 			}
 		@P = split(/\x00/, $reply);
 		$command = shift (@P);
@@ -366,7 +372,7 @@ sub _client_negotiate() {
 			}
 		elsif ($command eq "EN") {
 			$data = "EN";
-			$evl = 'return 1;';
+			$evl = 'return("RETURN1");';
 			}
 		elsif ($command eq "VE") {
 			$client->{_version} = $P[0];
@@ -383,34 +389,45 @@ sub _client_negotiate() {
 			$data .= ($client->{_version} >= 0.07) ? &_munge($client->{_localpublickey}) : $client->{_localpublickey};
 			}
 		elsif ($command eq "EA") {
-			$temp2 = undef;
-			$version = undef;
-			foreach $temp (@P) {
-				if ($_ENCRYPT_AVAILABLE{$temp}) {
-					$temp2 = $temp;
-					$version = $_ENCRYPT_AVAILABLE{$temp}{version};
-					last;
+			$temp2 = "";
+			$version = "";
+			if(!$client->{_donotencrypt}) {
+				foreach (@P) {
+					if ($_ENCRYPT_AVAILABLE{$_}) {
+						$temp2 = $_;
+						$version = $_ENCRYPT_AVAILABLE{$_}{version};
+						last;
+						}
 					}
+				$temp2 ||= "";
+				$version ||= "";
 				}
-			$temp2 ||= "";
-			$version ||= "";
 			$data = "EU\x00$temp2\x00$version";
-			$evl = '$client->{_encrypt} = $temp2; ($client->{_localpublickey}, $client->{_localprivatekey}) = &_genkey($client->{_encrypt}) or return undef;';
+			if ($temp2) {
+				$evl = '$client->{_encrypt} = $temp2;';
+				$evl .= '($client->{_localpublickey},$client->{_localprivatekey}) =';
+				$evl .= ' &_genkey($client->{_encrypt}) or ';
+				$evl .= ' return("RETURN0"); ';
+				}
 			}
 		elsif ($command eq "CA") {
-			$temp2 = undef;
-			$version = undef;
-			foreach $temp (@P) {
-				if ($_COMPRESS_AVAILABLE{$temp}) {
-					$temp2 = $temp;
-					$version = $_COMPRESS_AVAILABLE{$temp}{version};
-					last;
+			$temp2 = "";
+			$version = "";
+			if(!$client->{_donotcompress}) {
+				foreach (@P) {
+					if ($_COMPRESS_AVAILABLE{$_}) {
+						$temp2 = $_;
+						$version = $_COMPRESS_AVAILABLE{$_}{version};
+						last;
+						}
 					}
+				$temp2 ||= "";
+				$version ||= "";
 				}
-			$temp2 ||= "";
-			$version ||= "";
 			$data = "CU\x00$temp2\x00$version";
-			$evl = '$client->{_compress} = $temp2;';
+			if ($temp2) {
+				$evl = '$client->{_compress} = $temp2;';
+				}
 			}
 		else {
 			$data = "NO";
@@ -419,12 +436,15 @@ sub _client_negotiate() {
 			$@ = "Error negotiating (3) : $@";
 			return undef;
 			}
+		#
+		# NOW WE SEE IF WE NEED TO EVL ANYTHING
+		# IF THE RESULT OF THE EVAL IS "RETURNx" WHERE X IS A NUMBER, WE RETURN
+		# OTHERWISE WE KEEP GOING
+		#
 		if (defined $evl) {
-			if ($evl =~ /^return/) {
-				return 1;
-				}
-			else {
-				eval($evl);
+			$evl = eval($evl);
+			if ($evl =~ /^RETURN(.+)$/) {
+				return (($1) ? $1 : undef);
 				}
 			}
 		}
@@ -467,14 +487,16 @@ sub _serverclient_negotiate() {
 		$client->{_negotiating_lastevent} = "received";
 		if ($command eq "EU") {
 			$client->{_encrypt} = $P[0];
-			($client->{_localpublickey}, $client->{_localprivatekey}) = &_genkey($client->{_encrypt});
+			if ($client->{_encrypt}) {
+				$version = $_ENCRYPT_AVAILABLE{$P[0]}{version};
+				if ($version ne $P[1]) {
+					unshift(@{$client->{_negotiating_commands}}, "EVF\x00$version");
+					}
+				($client->{_localpublickey}, $client->{_localprivatekey}) = &_genkey($client->{_encrypt}) or return undef;
+				}
 			$temp = "EK\x00";
 			$temp .= ($client->{_version} >= 0.07) ? &_munge($client->{_localpublickey}) : $client->{_localpublickey};
 			unshift(@{$client->{_negotiating_commands}}, $temp);
-			$version = $_ENCRYPT_AVAILABLE{$P[0]}{version};
-			if ($version ne $P[1]) {
-				unshift(@{$client->{_negotiating_commands}}, "EVF\x00$version");
-				}
 			}
 		elsif ($command eq "CP") {
 			if (&_munge($P[0]) eq crypt($client->{_password}, $client->{_cryptsalt}) ) {
@@ -490,9 +512,11 @@ sub _serverclient_negotiate() {
 			}
 		elsif ($command eq "CU") {
 			$client->{_compress} = $P[0];
-			$version = $_COMPRESS_AVAILABLE{$P[0]}{version};
-			if ($version ne $P[1]) {
-				unshift(@{$client->{_negotiating_commands}}, "CVF\x00$version");
+			if ($client->{_compress}) {
+				$version = $_COMPRESS_AVAILABLE{$P[0]}{version};
+				if ($version ne $P[1]) {
+					unshift(@{$client->{_negotiating_commands}}, "CVF\x00$version");
+					}
 				}
 			}
 		elsif ($command eq "EK") {
@@ -709,9 +733,11 @@ sub _new_server() {
 	#
 	# To avoid key-gen delays while running, let's create RSA keypairs right now
 	#
-	foreach (keys %_ENCRYPT_AVAILABLE) {
-		if ($_ ne "_order" && $_ENCRYPT_AVAILABLE{$_}{name} eq 'Crypt::RSA') {
-			($_ENCRYPT_AVAILABLE{$_}{localpublickey}, $_ENCRYPT_AVAILABLE{$_}{localprivatekey}) = &_genkey($_) or return undef;
+	if (!$self->{_donotencrypt}) {
+		foreach (keys %_ENCRYPT_AVAILABLE) {
+			if ($_ ne "_order" && $_ENCRYPT_AVAILABLE{$_}{name} eq 'Crypt::RSA') {
+				($_ENCRYPT_AVAILABLE{$_}{localpublickey}, $_ENCRYPT_AVAILABLE{$_}{localprivatekey}) = &_genkey($_) or return undef;
+				}
 			}
 		}
 	bless($self, $class);

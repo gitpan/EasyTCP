@@ -1,5 +1,20 @@
 Revision history
 
+0.10
+	- Bugfixes release.
+	- A bug was introduced in version 0.09 where if a client did not have any encryption modules
+	  installed it would fail negotiating with the server and would not be able to connect.  This
+	  was fixed.
+	- A bug where failure to generate encryption keys was not handled correctly and passed on as
+	  a success, causing random halts and freezes during.  This was fixed.
+	- Clarified the error message when a client times out during negotiating with a server
+	- Encryption keypairs were always being generated and not used even if the objects were created
+	  with "donotencrypt".  This caused slowdown especially when Crypt::RSA was used due to it's
+	  slowness in generating keypairs.  This issue was fixed.
+	- A potential bug where an encryption or compression module version-conflict error was incorrectly
+	  reported.
+
+
 0.09
 	- Implemented Crypt::RSA support.  This is the first supported module that implements
 	  assymmetric cryptography.  Users who are serious about the security of their en-route
