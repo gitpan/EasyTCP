@@ -1,7 +1,7 @@
 package Net::EasyTCP;
 
 #
-# $Header: /cvsroot/Net::EasyTCP/EasyTCP.pm,v 1.118 2003/05/14 20:20:26 mina Exp $
+# $Header: /cvsroot/Net::EasyTCP/EasyTCP.pm,v 1.120 2003/05/15 13:06:23 mina Exp $
 #
 
 use strict;
@@ -128,7 +128,7 @@ require AutoLoader;
 # names by default without a very good reason. Use EXPORT_OK instead.
 # Do not simply export all your public functions/methods/constants.
 @EXPORT  = qw();
-$VERSION = '0.21';
+$VERSION = '0.22';
 
 # Preloaded methods go here.
 
@@ -309,35 +309,44 @@ sub _gencompatabilityreference {
 }
 
 #
-# This takes in an encryption key id and an optional "newquick" boolean flag
+# This takes in an encryption key id and an optional "quick" boolean flag
 # Generates a keypair (public, private) and returns them according to the type of encryption specified
 # Returns undef on error
-# If "newquick" is not specified and there are already a keypair for the specified module stored globally,
+# If "quick" is not specified and there are already a keypair for the specified module stored globally,
 # it will return that instead of generating new ones.
-# If "newquick" is supplied, you're guaranteed to receive a new key that wasn't given out in the past
-# However, the strength of that key could be possibly reduced
+# If "quick" is supplied, you're guaranteed to receive a new key that wasn't given out in the past to
+# non-quick requests. It may be a repeat of a previous "quick" pair. However, the strength of that key
+# could be possibly reduced.
 #
 sub _genkey {
 	my $modulekey = shift;
-	my $newquick  = shift;
+	my $quick     = shift;
 	my $module    = $_ENCRYPT_AVAILABLE{$modulekey}{name};
 	my $key1      = undef;
 	my $key2      = undef;
 	my $temp;
 	$@ = undef;
-	if (!$newquick && $_ENCRYPT_AVAILABLE{$modulekey}{localpublickey} && $_ENCRYPT_AVAILABLE{$modulekey}{localprivatekey}) {
+	if (!$quick && $_ENCRYPT_AVAILABLE{$modulekey}{localpublickey} && $_ENCRYPT_AVAILABLE{$modulekey}{localprivatekey}) {
 		$key1 = $_ENCRYPT_AVAILABLE{$modulekey}{localpublickey};
 		$key2 = $_ENCRYPT_AVAILABLE{$modulekey}{localprivatekey};
+	}
+	elsif ($quick && $_ENCRYPT_AVAILABLE{$modulekey}{localquickpublickey} && $_ENCRYPT_AVAILABLE{$modulekey}{localquickprivatekey}) {
+		$key1 = $_ENCRYPT_AVAILABLE{$modulekey}{localquickpublickey};
+		$key2 = $_ENCRYPT_AVAILABLE{$modulekey}{localquickprivatekey};
 	}
 	elsif ($module eq 'Crypt::RSA') {
 		$temp = Crypt::RSA->new();
 		($key1, $key2) = $temp->keygen(
-			Size => $newquick ? 128 : 512,
+			Size => $quick ? 338 : 512,
 			Verbosity => 0,
 		  )
-		  or $@ = $temp->errstr();
+		  or $@ = "Failed to create RSA keypair: " . $temp->errstr();
 		if ($key1) {
 			$key1 = _bin2asc(nfreeze($key1));
+			if ($quick) {
+				$_ENCRYPT_AVAILABLE{$modulekey}{localquickpublickey}  = $key1;
+				$_ENCRYPT_AVAILABLE{$modulekey}{localquickprivatekey} = $key2;
+			}
 		}
 	}
 	elsif ($module eq 'Crypt::Rijndael') {
@@ -757,6 +766,15 @@ sub _client_negotiate {
 			#
 			$tempprivate = _asc2bin($P[2]);
 			$tempscalar  = _asc2bin($P[3]);
+
+			#
+			# Sometimes the tempprivate is frozen. If we can thaw it, let's do it:
+			#
+			undef $@;
+			eval { $temp = thaw $tempprivate };
+			if (!$@) {
+				$tempprivate = $temp;
+			}
 			$client->{_encrypt}         = $P[0];
 			$client->{_localprivatekey} = $tempprivate;
 			if (_decrypt($client, \$tempscalar) && $tempscalar eq $client->{_compatabilityscalar}) {
@@ -767,7 +785,7 @@ sub _client_negotiate {
 				($temppublic, $tempprivate) = _genkey($P[0], 1);
 				$client->{_remotepublickey} = $temppublic;
 				if (_encrypt($client, \$tempscalar)) {
-					$data = "EM\x00$P[0]\x00" . $_ENCRYPT_AVAILABLE{ $P[0] }{version} . "\x00" . _bin2asc($tempprivate) . "\x00" . _bin2asc($tempscalar);
+					$data = "EM\x00$P[0]\x00" . $_ENCRYPT_AVAILABLE{ $P[0] }{version} . "\x00" . _bin2asc(ref($tempprivate) ? nfreeze $tempprivate : $tempprivate) . "\x00" . _bin2asc($tempscalar);
 				}
 				delete $client->{_remotepublickey};
 			}
@@ -978,6 +996,15 @@ sub _serverclient_negotiate {
 			#
 			$tempprivate = _asc2bin($P[2]);
 			$tempscalar  = _asc2bin($P[3]);
+
+			#
+			# Sometimes the tempprivate is frozen. If we can thaw it, let's do it:
+			#
+			undef $@;
+			eval { $temp = thaw $tempprivate };
+			if (!$@) {
+				$tempprivate = $temp;
+			}
 			$client->{_encrypt}         = $P[0];
 			$client->{_localprivatekey} = $tempprivate;
 			if (_decrypt($client, \$tempscalar) && $tempscalar eq $client->{_compatabilityscalar}) {
@@ -1181,7 +1208,7 @@ sub _serverclient_negotiate_sendnext {
 				$client->{_encrypt}         = $_;
 				$tempscalar = $client->{_compatabilityscalar};
 				if (_encrypt($client, \$tempscalar)) {
-					$data = "EM\x00$_\x00" . $_ENCRYPT_AVAILABLE{$_}{version} . "\x00" . _bin2asc($tempprivate) . "\x00" . _bin2asc($tempscalar);
+					$data = "EM\x00$_\x00" . $_ENCRYPT_AVAILABLE{$_}{version} . "\x00" . _bin2asc(ref($tempprivate) ? nfreeze $tempprivate : $tempprivate) . "\x00" . _bin2asc($tempscalar);
 					push (@{ $client->{_negotiating_commands} }, $data);
 				}
 				delete $client->{_remotepublickey};
