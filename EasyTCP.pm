@@ -1,7 +1,7 @@
 package Net::EasyTCP;
 
 #
-# $Header: /cvsroot/Net::EasyTCP/EasyTCP.pm,v 1.116 2003/05/14 19:34:20 mina Exp $
+# $Header: /cvsroot/Net::EasyTCP/EasyTCP.pm,v 1.118 2003/05/14 20:20:26 mina Exp $
 #
 
 use strict;
@@ -128,7 +128,7 @@ require AutoLoader;
 # names by default without a very good reason. Use EXPORT_OK instead.
 # Do not simply export all your public functions/methods/constants.
 @EXPORT  = qw();
-$VERSION = '0.20';
+$VERSION = '0.21';
 
 # Preloaded methods go here.
 
@@ -702,10 +702,12 @@ sub _client_negotiate {
 			#
 			$client->{_storableversion} = $P[0];
 			if ($P[1]) {
+
+				#
+				# New compatability method
+				#
 				undef $@;
-				eval {
-					$temp = thaw(_asc2bin($P[1]));
-				};
+				eval { $temp = thaw(_asc2bin($P[1])); };
 				if (!$temp || $@) {
 					$@ = "Error thawing compatability reference: $! $@ -- This may be because you're using binary-image-incompatible versions of the Storable module.  Please update the Storable module on both ends othe the connection to the same latest stable version.";
 					return undef;
@@ -715,7 +717,10 @@ sub _client_negotiate {
 					return undef;
 				}
 			}
-			$data = "SVE\x00" . $Storable::VERSION . "\x00" . _bin2asc(nfreeze($client->{_compatabilityreference}));
+			$data = "SVE\x00" . $Storable::VERSION;
+			if ($client->{_compatabilityreference}) {
+				$data .= "\x00" . _bin2asc(nfreeze($client->{_compatabilityreference}));
+			}
 		}
 		elsif ($command eq "SVF" && !$client->{_donotcheckversion}) {
 

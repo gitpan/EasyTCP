@@ -1,7 +1,11 @@
-$Header: /cvsroot/Net::EasyTCP/Changes,v 1.32 2003/05/14 19:13:12 mina Exp $
+$Header: /cvsroot/Net::EasyTCP/Changes,v 1.33 2003/05/14 20:20:25 mina Exp $
 
 
 REVISION HISTORY:
+
+0.21
+	- Fixed a bug that prevented version 0.20 clients to talk to servers in older versions.
+
 
 0.20
 	- No more strict dependency on exact versions match for the Storable module, encryption
