@@ -17,8 +17,13 @@ BEGIN {
 		['2', 'Compress::LZF'],
 		);
 	my @_encrypt_modules = (
-		['2', 'Crypt::CipherSaber'],
+		['3', 'Crypt::CBC', 0],
+		['6', 'Crypt::DES_EDE3', 1],
+		['4', 'Crypt::Blowfish', 1],
+		['5', 'Crypt::DES', 1],
+		['2', 'Crypt::CipherSaber', 0],
 		);
+	my $hasCBC = 0;
 	# Now we check the compress and encrypt arrays for existing modules
 	foreach (@_compress_modules) {
 		$@ = undef;
@@ -35,7 +40,12 @@ BEGIN {
 			eval ("require $_->[1];") || die "$_->[1] not found\n";
 			};
 		if (!$@) {
-			push (@_ENCRYPT_AVAILABLE, $_);
+			if ($_->[1] eq 'Crypt::CBC') {
+				$hasCBC = 1;
+				}
+			elsif (($hasCBC && $_->[2]) || !$_->[2]) {
+				push (@_ENCRYPT_AVAILABLE, $_);
+				}
 			}
 		}
 	}
@@ -48,7 +58,7 @@ require AutoLoader;
 # names by default without a very good reason. Use EXPORT_OK instead.
 # Do not simply export all your public functions/methods/constants.
 @EXPORT = qw();
-$VERSION = '0.02';
+$VERSION = '0.03';
 
 # Preloaded methods go here.
 
@@ -63,6 +73,7 @@ sub _genkey() {
 	my $method = "";
 	my $key1 = undef;
 	my $key2 = undef;
+	my $temp;
 	foreach (@_ENCRYPT_AVAILABLE) {
 		if ($methodkey eq $_->[0]) {
 			$method = $_->[1];
@@ -71,6 +82,24 @@ sub _genkey() {
 		}
 	if ($method eq 'Crypt::CipherSaber') {
 		for (1..32) {
+			$key1 .= chr(int(rand(93))+33);
+			}
+		$key2 = $key1;
+		}
+	elsif ($method eq 'Crypt::Blowfish') {
+		for (1..56) {
+			$key1 .= chr(int(rand(93))+33);
+			}
+		$key2 = $key1;
+		}
+	elsif ($method eq 'Crypt::DES_EDE3') {
+		for (1..24) {
+			$key1 .= chr(int(rand(93))+33);
+			}
+		$key2 = $key1;
+		}
+	elsif ($method eq 'Crypt::DES') {
+		for (1..8) {
 			$key1 .= chr(int(rand(93))+33);
 			}
 		$key2 = $key1;
@@ -153,6 +182,42 @@ sub _encrypt() {
 		$$rdata = $temp->encrypt($$rdata);
 		return 1;
 		}
+	elsif ($method eq 'Crypt::Blowfish') {
+		$temp = Crypt::CBC->new({
+			'key'		   => $publickey,
+			'cipher'	   => $method,
+			'iv'		   => '$KJh#(}q',
+			'regenerate_key'   => 0,
+			'padding'	   => 'space',
+			'prepend_iv'       => 0,
+			});
+		$$rdata = $temp->encrypt($$rdata);
+		return 1;
+		}
+	elsif ($method eq 'Crypt::DES_EDE3') {
+		$temp = Crypt::CBC->new({
+			'key'		   => $publickey,
+			'cipher'	   => $method,
+			'iv'		   => '$KJh#(}q',
+			'regenerate_key'   => 0,
+			'padding'	   => 'space',
+			'prepend_iv'       => 0,
+			});
+		$$rdata = $temp->encrypt($$rdata);
+		return 1;
+		}
+	elsif ($method eq 'Crypt::DES') {
+		$temp = Crypt::CBC->new({
+			'key'		   => $publickey,
+			'cipher'	   => $method,
+			'iv'		   => '$KJh#(}q',
+			'regenerate_key'   => 0,
+			'padding'	   => 'space',
+			'prepend_iv'       => 0,
+			});
+		$$rdata = $temp->encrypt($$rdata);
+		return 1;
+		}
 	return undef;
 	}
 
@@ -174,6 +239,42 @@ sub _decrypt() {
 		}
 	if ($method eq 'Crypt::CipherSaber') {
 		$temp = Crypt::CipherSaber->new($privatekey);
+		$$rdata = $temp->decrypt($$rdata);
+		return 1;
+		}
+	elsif ($method eq 'Crypt::Blowfish') {
+		$temp = Crypt::CBC->new({
+			'key'		   => $privatekey,
+			'cipher'	   => $method,
+			'iv'		   => '$KJh#(}q',
+			'regenerate_key'   => 0,
+			'padding'	   => 'space',
+			'prepend_iv'       => 0,
+			});
+		$$rdata = $temp->decrypt($$rdata);
+		return 1;
+		}
+	elsif ($method eq 'Crypt::DES_EDE3') {
+		$temp = Crypt::CBC->new({
+			'key'		   => $privatekey,
+			'cipher'	   => $method,
+			'iv'		   => '$KJh#(}q',
+			'regenerate_key'   => 0,
+			'padding'	   => 'space',
+			'prepend_iv'       => 0,
+			});
+		$$rdata = $temp->decrypt($$rdata);
+		return 1;
+		}
+	elsif ($method eq 'Crypt::DES') {
+		$temp = Crypt::CBC->new({
+			'key'		   => $privatekey,
+			'cipher'	   => $method,
+			'iv'		   => '$KJh#(}q',
+			'regenerate_key'   => 0,
+			'padding'	   => 'space',
+			'prepend_iv'       => 0,
+			});
 		$$rdata = $temp->decrypt($$rdata);
 		return 1;
 		}
@@ -622,85 +723,88 @@ Transparent compression
 
 =head1 SYNOPSIS
 
-B<SERVER EXAMPLE:>
+=over 4
 
-  use Net::EasyTCP;
+=item SERVER EXAMPLE
 
-  $server = new Net::EasyTCP(
-	mode            =>      "server",
-	port            =>      2345,
-	)
-	|| die "ERROR CREATING SERVER: $@\n";
+	use Net::EasyTCP;
 
-  $server->setcallback(
-	data            =>      \&gotdata,
-	connect         =>      \&connected,
-	disconnect	=>	\&disconnected,
-	)
-	|| die "ERROR SETTING CALLBACKS: $@\n";
+	$server = new Net::EasyTCP(
+		mode            =>      "server",
+		port            =>      2345,
+		)
+		|| die "ERROR CREATING SERVER: $@\n";
 
-  $server->start() || die "ERROR STARTING SERVER: $@\n";
+	$server->setcallback(
+		data            =>      \&gotdata,
+		connect         =>      \&connected,
+		disconnect	=>	\&disconnected,
+		)
+		|| die "ERROR SETTING CALLBACKS: $@\n";
 
-  sub gotdata() {
-	my $client = shift;
-	my $serial = $client->serial();
-	my $data = $client->data();
-	print "Client $serial sent me some data, sending it right back to them again\n";
-	$client->send($data) || die "ERROR SENDING TO CLIENT: $@\n";
-	if ($data eq "QUIT") {
-		$client->close() || die "ERROR CLOSING CLIENT: $@\n";
+	$server->start() || die "ERROR STARTING SERVER: $@\n";
+
+	sub gotdata() {
+		my $client = shift;
+		my $serial = $client->serial();
+		my $data = $client->data();
+		print "Client $serial sent me some data, sending it right back to them again\n";
+		$client->send($data) || die "ERROR SENDING TO CLIENT: $@\n";
+		if ($data eq "QUIT") {
+			$client->close() || die "ERROR CLOSING CLIENT: $@\n";
+			}
+		elsif ($data eq "DIE") {
+			$server->stop() || die "ERROR STOPPING SERVER: $@\n";
+			}
 		}
-	elsif ($data eq "DIE") {
-		$server->stop() || die "ERROR STOPPING SERVER: $@\n";
+
+	sub connected() {
+		my $client = shift;
+		my $serial = $client->serial();
+		print "Client $serial just connected\n";
 		}
-	}
 
-  sub connected() {
-	my $client = shift;
-	my $serial = $client->serial();
-	print "Client $serial just connected\n";
-	}
-
-  sub disconnected() {
-	my $client = shift;
-	my $serial = $client->serial();
-	print "Client $serial just disconnected\n";
-	}
-
-
-B<CLIENT EXAMPLE:>
-
-  use Net::EasyTCP;
-
-  $client = new Net::EasyTCP(
-	mode            =>      "client",
-	host            =>      'localhost',
-	port            =>      2345,
-	)
-	|| die "ERROR CREATING CLIENT: $@\n";
-
-  #Send and receive a simple string
-  $client->send("HELLO THERE") || die "ERROR SENDING: $@\n";
-  $reply = $client->receive() || die "ERROR RECEIVING: $@\n";
-
-  #Send and receive complex objects/strings/arrays/hashes by reference
-  %hash = ("to be or" => "not to be" , "just another" => "perl hacker");
-  $client->send(\%hash) || die "ERROR SENDING: $@\n";
-  $reply = $client->receive() || die "ERROR RECEIVING: $@\n";
-  foreach (keys %{$reply}) {
-	print "Received key: $_ = $reply->{$_}\n";
-	}
-
-  #Send and receive large binary data
-  for (1..4096) {
-	for (0..255) {
-		$largedata .= chr($_);
+	sub disconnected() {
+		my $client = shift;
+		my $serial = $client->serial();
+		print "Client $serial just disconnected\n";
 		}
-	}
-  $client->send($largedata) || die "ERROR SENDING: $@\n";
-  $reply = $client->receive() || die "ERROR RECEIVING: $@\n";
 
-  $client->close();
+=item CLIENT EXAMPLE:
+
+	use Net::EasyTCP;
+
+	$client = new Net::EasyTCP(
+		mode            =>      "client",
+		host            =>      'localhost',
+		port            =>      2345,
+		)
+		|| die "ERROR CREATING CLIENT: $@\n";
+
+	#Send and receive a simple string
+	$client->send("HELLO THERE") || die "ERROR SENDING: $@\n";
+	$reply = $client->receive() || die "ERROR RECEIVING: $@\n";
+
+	#Send and receive complex objects/strings/arrays/hashes by reference
+	%hash = ("to be or" => "not to be" , "just another" => "perl hacker");
+	$client->send(\%hash) || die "ERROR SENDING: $@\n";
+	$reply = $client->receive() || die "ERROR RECEIVING: $@\n";
+	foreach (keys %{$reply}) {
+		print "Received key: $_ = $reply->{$_}\n";
+		}
+
+	#Send and receive large binary data
+	for (1..4096) {
+		for (0..255) {
+			$largedata .= chr($_);
+			}
+		}
+	$client->send($largedata) || die "ERROR SENDING: $@\n";
+	$reply = $client->receive() || die "ERROR RECEIVING: $@\n";
+
+	$client->close();
+
+=back
 
 =head1 DESCRIPTION
 
@@ -763,6 +867,10 @@ See setcallback()
 
 B<[C]> Instructs a client object to close it's connection with a server.
 
+=item compression()
+
+B<[C]> Returns the name of the module used as the compression module for this connection, undef if no compression occurs.
+
 =item data()
 
 B<[C]> Retrieves the previously-retrieved data associated with a client object.  This method is typically used from inside the callback sub associated with the "data" event, since the callback sub is passed nothing more than a client object.
@@ -770,6 +878,10 @@ B<[C]> Retrieves the previously-retrieved data associated with a client object. 
 =item disconnect()
 
 See close()
+
+=item encryption()
+
+B<[C]> Returns the name of the module used as the encryption module for this connection, undef if no encryption occurs.
 
 =item mode()
 
@@ -836,9 +948,15 @@ B<[S]> Instructs a running server to stop and returns immediately (does not wait
 
 Clients and servers written using this class will automatically compress and/or encrypt the transferred data if the appropriate modules are found.
 
-Compression will be automatically enabled if L<Compress::Zlib|Compress::Zlib> (recommended) or L<Compress::LZF|Compress::LZF> are installed on both the client and the server.
+Compression will be automatically enabled if one (or more) of: L<Compress::Zlib|Compress::Zlib> or L<Compress::LZF|Compress::LZF> are installed on both the client and the server.
 
-Encryption will be automatically enabled if L<Crypt::CipherSaber|Crypt::CipherSaber> is installed on both the client and the server.
+Encryption will be automatically enabled if one (or more) of: L<Crypt::DES_EDE3|Crypt::DES_EDE3> or L<Crypt::Blowfish|Crypt::Blowfish> or L<Crypt::DES|Crypt::DES> or L<Crypt::CipherSaber|Crypt::CipherSaber> are installed on both the client and the server.
+
+Preference to the compression/encryption method used is determind by availablity checking following the order in which they are presented in the above lists.
+
+To find out which module(s) have been negotiated for use you can use the compression() and encryption() methods.
+
+Note that for this class's purposes, L<Crypt::CBC|Crypt::CBC> is a requirement to use L<Crypt::DES_EDE3|Crypt::DES_EDE3> or L<Crypt::Blowfish|Crypt::Blowfish> or L<Crypt::DES|Crypt::DES>.  So eventhough you may have these modules installed on both the client and the server, they will not be used unless L<Crypt::CBC|Crypt::CBC> is also installed on both ends.
 
 If the above modules are installed but you want to forcefully disable compression or encryption, supply the "donotcompress" and/or "donotencrypt" keys to the new() constructor.
 
@@ -884,7 +1002,7 @@ Mina Naguib, <mnaguib@cpan.org>
 
 =head1 SEE ALSO
 
-L<IO::Socket>, L<Compress::Zlib>, L<Compress::LZF>, L<Crypt::CipherSaber>
+L<IO::Socket>, L<Compress::Zlib>, L<Compress::LZF>, L<Crypt::CBC>, L<Crypt::DES_EDE3>, L<Crypt::Blowfish>, L<Crypt::DES>, L<Crypt::CipherSaber>
 
 =head1 COPYRIGHT
 
@@ -1198,4 +1316,39 @@ sub mode() {
 	my $self = shift;
 	my $mode = ($self->{_mode} eq "server") ? "server" : "client";
 	return $mode;
+	}
+
+#
+# This method replies saying what type of encryption is used, undef if none
+#
+sub encryption() {
+	my $self = shift;
+	my $methodkey = $self->{_encrypt};
+	if ($self->{_donotencrypt} || !$methodkey) {
+		return undef;
+		}
+	foreach (@_ENCRYPT_AVAILABLE) {
+		if ($_->[0] eq $methodkey) {
+			return ($_->[1]);
+			}
+		}
+	return undef;
+	}
+
+
+#
+# This method replies saying what type of compression is used, undef if none
+#
+sub compression() {
+	my $self = shift;
+	my $methodkey = $self->{_compress};
+	if ($self->{_donotcompress} || !$methodkey) {
+		return undef;
+		}
+	foreach (@_COMPRESS_AVAILABLE) {
+		if ($_->[0] eq $methodkey) {
+			return ($_->[1]);
+			}
+		}
+	return undef;
 	}

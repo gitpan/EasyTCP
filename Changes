@@ -1,15 +1,17 @@
 Revision history
 
+0.03
+	- Added encryption support for Crypt::DES_EDE3, Crypt::DES and Crypt::Blowfish
+	- Added 2 new methods to determine what type of compression and encryption has been negotiated.
 
-0.02  Thu Jan 10 16:30:00 2002
+0.02
 	- Implemented transparent compression
 	- Implemented transparent encryption
 	- Internal protocol majorly re-designed to accomodate new and future features
 	- Re-wrote the test routine to use fork() and simulate a real-world scenario
 	- Minor bugfixes in receive()
-	- Documentation changes to include all new features
 
-0.01  Mon Dec 31 11:37:43 2001
+0.01
 	- original version; created by h2xs 1.19
 
 	

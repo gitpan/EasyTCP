@@ -68,6 +68,7 @@ sub launchserver() {
 	&res($temp, "Set callbacks");
 	$temp = $server->start();
 	&res($temp, "Return of started server");
+	sleep (4);
 	}
 
 sub launchclient() {
