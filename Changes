@@ -1,5 +1,12 @@
 Revision history
 
+0.05
+	- Fixed a bug where calling the receive() method may have failed if a signal (such as child dying)
+	  was delivered to the process at the same time.  The bug became apparent on heavily-stormed
+	  servers with many forked() children dying, causing the negotiation with new clients to sometimes
+	  fail.
+	- Re-wrote the server-side negotiating code to prevent it from blocking for couple of seconds during
+	  negotiating with a newly connected client.
 0.04
 	- Fixed a bug where older versions of Crypt::CBC were not called correctly causing "make test"
 	  and almost everything else to fail.

@@ -58,7 +58,7 @@ require AutoLoader;
 # names by default without a very good reason. Use EXPORT_OK instead.
 # Do not simply export all your public functions/methods/constants.
 @EXPORT = qw();
-$VERSION = '0.04';
+$VERSION = '0.05';
 
 # Preloaded methods go here.
 
@@ -322,53 +322,35 @@ CN2:			foreach $temp (@P) {
 
 #
 # Once the server accepts a new connection, it calls this to negotiate basics with the client
-# This must return true once all negotiation's successful, or false if not
+# Unlike _client_negotiate() which does not return until negotiation is over, this sub
+# sends 1 command or parses one reply at a time then returns immediately
+# Although this is much more complicated, it needs to be done so
+# the server does not block when a client is negotiating with it
 #
 sub _serverclient_negotiate() {
 	my $client = shift;
+	my $reply = shift;
 	my $data;
-	my $reply;
-	my $timeout = 5;
-	my $temp;
 	my @P;
-	my @commands;
 	my $command;
 
-	$data = "EA";
-	foreach (@_ENCRYPT_AVAILABLE) {
-		$data .= "\x00$_->[0]";
+	if (!$client->{_negotiating}) {
+		return 1;
 		}
-	push (@commands, $data);
 
-	$data = "CA";
-	foreach (@_COMPRESS_AVAILABLE) {
-		$data .= "\x00$_->[0]";
-		}
-	push (@commands, $data);
-
-	push (@commands, "EN");
-
-	while (@commands) {
-		$data = shift(@commands);
-		if (!&_send($client, $data, 0)) {
-			$@ = "Error negotiating (1) : $@";
-			return undef;
-			}
-		$reply = $client->receive($timeout, 1);
-		if (!defined $reply) {
-			$@ = "Error negotiating (2): $@";
-			return undef;
-			}
+	if (defined $reply) {
+		# We're parsing a reply the other end sent us
 		@P = split(/\x00/, $reply);
 		$command = shift(@P);
 		if (!$command) {
 			$@ = "Error negotiating (3): $@";
 			return undef;
 			}
+		$client->{_negotiating_lastevent} = "received";
 		if ($command eq "EU") {
 			$client->{_encrypt} = $P[0];
 			($client->{_localpublickey}, $client->{_localprivatekey}) = &_genkey($client->{_encrypt});
-			unshift(@commands, "EK\x00$client->{_localpublickey}");
+			unshift(@{$client->{_negotiating_commands}}, "EK\x00$client->{_localpublickey}");
 			}
 		elsif ($command eq "CU") {
 			$client->{_compress} = $P[0];
@@ -377,9 +359,48 @@ sub _serverclient_negotiate() {
 			$client->{_remotepublickey} = $P[0];
 			}
 		elsif ($command eq "EN") {
-			last;
+			return 1;
 			}
 		}
+	elsif ($client->{_negotiating_lastevent} ne "sent") {
+		# We're sending a command to the other end, now we have to figure out which one
+		&_serverclient_negotiate_sendnext($client);
+		}
+	return undef;
+	}
+
+#
+# This is called by _serverclient_negotiate(). It's job is to figure out what's the next command to send
+# to the other end and send it.
+#
+sub _serverclient_negotiate_sendnext() {
+	my $client = shift;
+	my $data;
+
+	if (!defined $client->{_negotiating_commands}) {
+		# Let's initialize the sequence of commands we send
+		$data = "EA";
+		foreach (@_ENCRYPT_AVAILABLE) {
+			$data .= "\x00$_->[0]";
+			}
+		push (@{$client->{_negotiating_commands}}, $data);
+		$data = "CA";
+		foreach (@_COMPRESS_AVAILABLE) {
+			$data .= "\x00$_->[0]";
+			}
+		push (@{$client->{_negotiating_commands}}, $data);
+		push (@{$client->{_negotiating_commands}}, "EN");
+		}
+
+	$data = shift @{$client->{_negotiating_commands}};
+	if (!defined $data) {
+		return undef;
+		}
+	if (!&_send($client, $data, 0)) {
+		$@ = "Error negotiating (1) : $@";
+		return undef;
+		}
+	$client->{_negotiating_lastevent} = "sent";
 	return 1;
 	}
 
@@ -423,23 +444,10 @@ sub _unpackint() {
 	}
 
 #
-# This creates a new client object that's already connected (the server creates 
-# these when it accepts a new connection
-#
-sub _new_serverclient() {
-	my $class = shift;
-	my $sock = shift;
-	my $self;
-	$class =~ s/=.*//g;
-	$self->{_sock} = $sock;
-	$self->{_mode} = "serverclient";
-	bless ($self, $class);
-	return $self;
-	}
-
-#
 # This creates a new client object and outgoing connection and returns it as an object
 # , or returns undef if unsuccessful
+# If special parameter _sock is supplied, it will be taken as an existing connection
+# and not outgoing connection will be made
 #
 sub _new_client() {
 	my $class = shift;
@@ -447,31 +455,38 @@ sub _new_client() {
 	my $sock;
 	my $self = {};
 	my $temp;
-	if (!$para{host}) {
-		$@ = "Invalid host";
-		return undef;
+	if (!$para{_sock}) {
+		if (!$para{host}) {
+			$@ = "Invalid host";
+			return undef;
+			}
+		elsif (!$para{port}) {
+			$@ = "Invalid port";
+			return undef;
+			}
+		$sock = new IO::Socket::INET(
+			PeerAddr	=>	$para{host},
+			PeerPort	=>	$para{port},
+			Proto		=>	'tcp',
+			Timeout		=>	30,
+			);
+		$self->{_mode} = "client";
 		}
-	elsif (!$para{port}) {
-		$@ = "Invalid port";
-		return undef;
+	else {
+		$class =~ s/=.*//g;
+		$sock = $para{_sock};
+		$self->{_mode} = "serverclient";
 		}
-	$sock = new IO::Socket::INET(
-		PeerAddr	=>	$para{host},
-		PeerPort	=>	$para{port},
-		Proto		=>	'tcp',
-		Timeout		=>	30,
-		);
 	if (!$sock) {
 		$@ = "Could not connect to $para{host}:$para{port}: $!";
 		return undef;
 		}
 	$sock->autoflush(1);
 	$self->{_sock} = $sock;
-	$self->{_mode} = "client";
 	$self->{_donotcompress} = ($para{donotcompress}) ? 1 : 0;
 	$self->{_donotencrypt} = ($para{donotencrypt}) ? 1 : 0;
 	bless ($self, $class);
-	if (!&_client_negotiate($self)) {
+	if ($self->{_mode} eq "client" && !&_client_negotiate($self)) {
 		# Bad server
 		$self->close();
 		$@ = "Error negotiating with server: $@";
@@ -1037,6 +1052,7 @@ sub start() {
 	my $realdata;
 	my $result;
 	my $error;
+	my $negotiatingtimeout = 10;
 	$_SELECTOR = new IO::Select;
 	if ($self->{_mode} ne "server") {
 		$@ = "$self->{_mode} cannot use method start()";
@@ -1046,7 +1062,7 @@ sub start() {
 	$self->{_requeststop} = 0;
 	$_SELECTOR->add($self->{_sock});
 MLOOP:	while (!$self->{_requeststop}) {
-		@ready = $_SELECTOR->can_read(2);
+		@ready = $_SELECTOR->can_read(1);
 		foreach (@ready) {
 			if ($_ == $self->{_sock}) {
 				# The SERVER SOCKET is ready for accepting a new client
@@ -1057,36 +1073,33 @@ MLOOP:	while (!$self->{_requeststop}) {
 					}
 				$_SERIAL++;
 				$_SELECTOR->add($clientsock);
-				$clientobject{$clientsock} = &_new_serverclient($self, $clientsock);
+				$clientobject{$clientsock} = &_new_client($self, "_sock" => $clientsock);
 				$clientobject{$clientsock}->{_donotencrypt} = $self->{_donotencrypt};
 				$clientobject{$clientsock}->{_donotcompress} = $self->{_donotcompress};
 				$clientobject{$clientsock}->{_serial} = $_SERIAL;
-				if (!&_serverclient_negotiate($clientobject{$clientsock})) {
-					# Not a valid client
-					$clientobject{$clientsock}->close();
-					delete $clientobject{$clientsock};
-					}
-				else {
-					&{$self->{_callback_connect}}($clientobject{$clientsock}) if ($self->{_callback_connect});
-					}
+				$clientobject{$clientsock}->{_negotiating} = time;
 				}
 			else {
 				# One of the client sockets are ready
 				$result = sysread($_, $tempdata, 65536);
 				if (!defined $result) {
 					# Error somewhere during reading
-					&{$self->{_callback_disconnect}}($clientobject{$_}) if ($self->{_callback_disconnect});
+					if (!$clientobject{$_}->{_negotiating}) {
+						&{$self->{_callback_disconnect}}($clientobject{$_}) if ($self->{_callback_disconnect});
+						}
 					$clientobject{$_}->close();
 					delete $clientobject{$_};
 					}
 				elsif ($result == 0) {
 					# Client closed connection
-					&{$self->{_callback_disconnect}}($clientobject{$_}) if ($self->{_callback_disconnect});
+					if (!$clientobject{$_}->{_negotiating}) {
+						&{$self->{_callback_disconnect}}($clientobject{$_}) if ($self->{_callback_disconnect});
+						}
 					$clientobject{$_}->close();
 					delete $clientobject{$_};
 					}
 				else {
-					# Client sent us some good data
+					# Client sent us some good data (not necessarily a full packet)
 					$clientobject{$_}->{_databuffer} .= $tempdata;
 					while (1) {
 						($data, $realdata) = &_extractdata($clientobject{$_});
@@ -1096,7 +1109,16 @@ MLOOP:	while (!$self->{_requeststop}) {
 							}
 						elsif (!$realdata) {
 							# We found something, but it's internal protocol data
-							&_parseinternaldata($clientobject{$_}, $data);
+							if ($clientobject{$_}->{_negotiating}) {
+								$result = &_serverclient_negotiate($clientobject{$_}, $data);
+								if ($result) {
+									$clientobject{$_}->{_negotiating} = 0;
+									&{$self->{_callback_connect}}($clientobject{$_}) if ($self->{_callback_connect});
+									}
+								}
+							else {
+								&_parseinternaldata($clientobject{$_}, $data);
+								}
 							}
 						else {
 							# We found something and it's real data
@@ -1104,6 +1126,21 @@ MLOOP:	while (!$self->{_requeststop}) {
 							&{$self->{_callback_data}}($clientobject{$_}) if ($self->{_callback_data});
 							}
 						}
+					}
+				}
+			}
+		# Now we check on all the serverclients still negotiating and help them finish negotiating
+		# or weed out the ones timing out
+		foreach (keys %clientobject) {
+			if ($clientobject{$_}->{_negotiating}) {
+				$result = &_serverclient_negotiate($clientobject{$_});
+				if ($result) {
+					$clientobject{$_}->{_negotiating} = 0;
+					&{$self->{_callback_connect}}($clientobject{$_}) if ($self->{_callback_connect});
+					}
+				elsif ((time-$clientobject{$_}->{_negotiating}) > $negotiatingtimeout) {
+					$clientobject{$_}->close();
+					delete $clientobject{$_};
 					}
 				}
 			}
@@ -1192,7 +1229,12 @@ sub receive() {
 	while ((time - $lastactivity) < $timeout) {
 		@ready = $selector->can_read($timeout);
 		if (!@ready) {
-			last;
+			if ($! =~ /interrupt/i) {
+				next;
+				}
+			else {
+				last;
+				}
 			}
 		$result = sysread($self->{_sock}, $temp, 65536);
 		if ($result == 0) {
