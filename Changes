@@ -1,7 +1,23 @@
-$Header: /cvsroot/Net::EasyTCP/Changes,v 1.31 2003/03/02 05:37:56 mina Exp $
+$Header: /cvsroot/Net::EasyTCP/Changes,v 1.32 2003/05/14 19:13:12 mina Exp $
 
 
 REVISION HISTORY:
+
+0.20
+	- No more strict dependency on exact versions match for the Storable module, encryption
+	  or compression modules.
+	  It used to be that Net::EasyTCP clients and servers insisted that if they use a module
+	  mentioned above, that both ends used the same version.  This was required because it
+	  was observed that different versions of the same module could sometime produce
+	  incompatible data (which is a bad thing when you're trying to decrypt an encrypted
+	  message you just received).
+	  This problem is now fixed.  During the negotiation phase, the clients and the servers
+	  will test all the modules and decide on which to use on compatability checks and the
+	  ability to deal with sample data, as opposed to version checks.
+	- Callback suppplied to the start() method will be given the server object as it's only
+	  argument as opposed to no arguments.
+	- Internal code cleanups
+
 
 0.19
 	- Fixed a bug in the testing script that caused the test to fail if you already had a
