@@ -1,7 +1,7 @@
 package Net::EasyTCP;
 
 use strict;
-use vars qw($VERSION @ISA @EXPORT @EXPORT_OK $_SERIAL %_COMPRESS_AVAILABLE %_ENCRYPT_AVAILABLE);
+use vars qw($VERSION @ISA @EXPORT @EXPORT_OK $_SERIAL %_COMPRESS_AVAILABLE %_ENCRYPT_AVAILABLE %_MISC_AVAILABLE);
 
 use IO::Socket;
 use IO::Select;
@@ -9,7 +9,7 @@ use Storable qw(nfreeze thaw);
 
 #
 # This block's purpose is to:
-# . Put the list of available modules in %_COMPRESS_AVAILABLE and %_ENCRYPT_AVAILABLE
+# . Put the list of available modules in %_COMPRESS_AVAILABLE and %_ENCRYPT_AVAILABLE and %_MISC_AVAILABLE
 #
 BEGIN {
 	my $version;
@@ -29,19 +29,34 @@ BEGIN {
 		#
 		# HIGHEST EVER USED: B
 		#
-		['B', 'Crypt::RSA', 0],
-		['3', 'Crypt::CBC', 0],
-		['A', 'Crypt::Rijndael', 1],
-		['9', 'Crypt::RC6', 1],
-		['4', 'Crypt::Blowfish', 1],
-		['6', 'Crypt::DES_EDE3', 1],
-		['5', 'Crypt::DES', 1],
-		['2', 'Crypt::CipherSaber', 0],
+		['B', 'Crypt::RSA', 0, 0],
+		['3', 'Crypt::CBC', 0, 0],
+		['A', 'Crypt::Rijndael', 1, 1],
+		['9', 'Crypt::RC6', 1, 1],
+		['4', 'Crypt::Blowfish', 1, 1],
+		['6', 'Crypt::DES_EDE3', 1, 1],
+		['5', 'Crypt::DES', 1, 1],
+		['2', 'Crypt::CipherSaber', 0, 1],
 		);
+	my @_misc_modules = (
+		#
+		# MAKE SURE WE DO NOT EVER ASSIGN THE SAME KEY TO MORE THAN ONE MODULE, EVEN OLD ONES NO LONGER IN THE LIST
+		# (this is not as necessary as compress and encrypt since it's not transmitted to peers, but just in case...)
+		#
+		# HIGHEST EVER USED: 1
+		#
+		['1', 'Crypt::Random'],
+		);
+	#
+	# Let's reset some variables:
+	#
 	$hasCBC = 0;
 	$_COMPRESS_AVAILABLE{_order} = [];
 	$_ENCRYPT_AVAILABLE{_order} = [];
-	# Now we check the compress and encrypt arrays for existing modules
+	$_MISC_AVAILABLE{_order} = [];
+	#
+	# Now we check the compress array for existing modules
+	#
 	foreach (@_compress_modules) {
 		$@ = undef;
 		eval {
@@ -54,6 +69,9 @@ BEGIN {
 			$_COMPRESS_AVAILABLE{$_->[0]}{version} = $version;
 			}
 		}
+	#
+	# Now we check the encrypt array for existing modules
+	#
 	foreach (@_encrypt_modules) {
 		$@ = undef;
 		eval {
@@ -68,8 +86,24 @@ BEGIN {
 				push (@{$_ENCRYPT_AVAILABLE{_order}}, $_->[0]);
 				$_ENCRYPT_AVAILABLE{$_->[0]}{name} = $_->[1];
 				$_ENCRYPT_AVAILABLE{$_->[0]}{cbc} = $_->[2];
+				$_ENCRYPT_AVAILABLE{$_->[0]}{mergewithpassword} = $_->[3];
 				$_ENCRYPT_AVAILABLE{$_->[0]}{version} = $version;
 				}
+			}
+		}
+	#
+	# Now we check the misc array for existing modules
+	#
+	foreach (@_misc_modules) {
+		$@ = undef;
+		eval {
+			eval ("require $_->[1];") || die "$_->[1] not found\n";
+			$version = eval ("\$$_->[1]::VERSION;") || "unknown";
+			};
+		if (!$@) {
+			push (@{$_MISC_AVAILABLE{_order}}, $_->[0]);
+			$_MISC_AVAILABLE{$_->[0]}{name} = $_->[1];
+			$_MISC_AVAILABLE{$_->[0]}{version} = $version;
 			}
 		}
 	}
@@ -82,7 +116,7 @@ require AutoLoader;
 # names by default without a very good reason. Use EXPORT_OK instead.
 # Do not simply export all your public functions/methods/constants.
 @EXPORT = qw();
-$VERSION = '0.14';
+$VERSION = '0.15';
 
 # Preloaded methods go here.
 
@@ -122,22 +156,34 @@ sub _asc2bin() {
 	}
 
 #
-# This does very very primitive 2-way encryption
-# Takes a string and returns it encrypted, or takes an encrypted string and returns plaintext
+# This does very very primitive 2-way encryption & decryption (kinda like ROT13.. works both ways)
+# Takes a client and a string, returns the enc/dec/rypted string
+#
+# This encryption is used to protect the encrypted password and the public key transmitted over the wire
+# It's a last resort of security in case none of the encryption modules were found
 #
 sub _munge() {
+	my $client = shift || return undef;
 	my $data = shift;
-	return $data;
-	my $c;
-	my $t;
-	for (0..length($data)-1) {
-		$c = substr($data, $_, 1);
-		$t = vec($c, 0, 4);
-		vec($c, 0, 4) = vec($c, 1, 4);
-		vec($c, 1, 4) = $t;
-		substr($data, $_, 1) = $c;
+	#
+	# Munge's tricky because is existed on and off in different versions
+	#
+	if ($client->{_version} == 0.07 || $client->{_version} == 0.08 || $client->{_version} >= 0.15) {
+		# Peer supports munge
+		my $c;
+		my $t;
+		for (0..length($data)-1) {
+			$c = substr($data, $_, 1);
+			$t = vec($c, 0, 4);
+			vec($c, 0, 4) = vec($c, 1, 4);
+			vec($c, 1, 4) = $t;
+			substr($data, $_, 1) = $c;
+			}
+		$data = reverse($data);
 		}
-	$data = reverse($data);
+	else {
+		# Our peer doesn't munge, so we won't either
+		}
 	return $data;
 	}
 
@@ -182,39 +228,27 @@ sub _genkey() {
 			}
 		}
 	elsif ($module eq 'Crypt::Rijndael') {
-		for (1..32) {
-			$key1 .= chr(int(rand(93))+33);
-			}
+		$key1 = &_genrandstring(32);
 		$key2 = $key1;
 		}
 	elsif ($module eq 'Crypt::RC6') {
-		for (1..32) {
-			$key1 .= chr(int(rand(93))+33);
-			}
+		$key1 = &_genrandstring(32);
 		$key2 = $key1;
 		}
 	elsif ($module eq 'Crypt::Blowfish') {
-		for (1..56) {
-			$key1 .= chr(int(rand(93))+33);
-			}
+		$key1 = &_genrandstring(56);
 		$key2 = $key1;
 		}
 	elsif ($module eq 'Crypt::DES_EDE3') {
-		for (1..24) {
-			$key1 .= chr(int(rand(93))+33);
-			}
+		$key1 = &_genrandstring(24);
 		$key2 = $key1;
 		}
 	elsif ($module eq 'Crypt::DES') {
-		for (1..8) {
-			$key1 .= chr(int(rand(93))+33);
-			}
+		$key1 = &_genrandstring(8);
 		$key2 = $key1;
 		}
 	elsif ($module eq 'Crypt::CipherSaber') {
-		for (1..32) {
-			$key1 .= chr(int(rand(93))+33);
-			}
+		$key1 = &_genrandstring(32);
 		$key2 = $key1;
 		}
 	else {
@@ -277,12 +311,41 @@ sub _encrypt() {
 	my $modulekey = $client->{_encrypt} || return undef;
 	my $module = $_ENCRYPT_AVAILABLE{$modulekey}{name};
 	my $cbc = $_ENCRYPT_AVAILABLE{$modulekey}{cbc};
+	my $mergewithpassword = $_ENCRYPT_AVAILABLE{$modulekey}{mergewithpassword};
 	my $temp;
 	my $publickey = $client->{_remotepublickey} || return undef;
+	my $cleanpassword;
+	if (defined $client->{_password}) {
+		$cleanpassword = $client->{_password};
+		$cleanpassword =~ s/[^a-z0-9]//gi;
+		}
+	else {
+		$cleanpassword = undef;
+		}
+	#
+	# IF there is a password for the connection, and we're using Symmetric encryption, we include the password
+	# in the encryption key used
+	#
+	if ($mergewithpassword && defined $cleanpassword && length($cleanpassword) && $client->{_authenticated} && !$client->{_negotiating} && $client->{_version} >= 0.15) {
+		if (length($cleanpassword) <= length($publickey)) {
+			substr($publickey, 0, length($cleanpassword)) = $cleanpassword;
+			}
+		elsif (length($cleanpassword) > length($publickey)) {
+			$publickey = substr($cleanpassword, 0, length($publickey));
+			}
+		else {
+			$@ = "Failed to merge password with symmetric encryption key";
+			return undef;
+			}
+		}
 	if ($publickey =~ /^(\%[0-9A-F]{2})+$/) {
+		#
+		# In the case of binary keys (such as RSA's) they're ascii-armored, we need to decrypt them
+		#
 		$publickey = thaw(&_asc2bin($publickey)) || return undef;
 		$client->{_remotepublickey} = $publickey;
 		}
+
 	if ($module eq 'Crypt::RSA') {
 		$temp = Crypt::RSA->new();
 		$$rdata = $temp->encrypt(
@@ -315,8 +378,34 @@ sub _decrypt() {
 	my $modulekey = $client->{_encrypt} || return undef;
 	my $module = $_ENCRYPT_AVAILABLE{$modulekey}{name};
 	my $cbc = $_ENCRYPT_AVAILABLE{$modulekey}{cbc};
+	my $mergewithpassword = $_ENCRYPT_AVAILABLE{$modulekey}{mergewithpassword};
 	my $temp;
 	my $privatekey = $client->{_localprivatekey} || return undef;
+	my $cleanpassword;
+	if (defined $client->{_password}) {
+		$cleanpassword = $client->{_password};
+		$cleanpassword =~ s/[^a-z0-9]//gi;
+		}
+	else {
+		$cleanpassword = undef;
+		}
+	#
+	# IF there is a password for the connection, and we're using Symmetric encryption, we include the password
+	# in the decryption key used
+	#
+	if ($mergewithpassword && defined $cleanpassword && length($cleanpassword) && $client->{_authenticated} && !$client->{_negotiating} && $client->{_version} >= 0.15) {
+		if (length($cleanpassword) <= length($privatekey)) {
+			substr($privatekey, 0, length($cleanpassword)) = $cleanpassword;
+			}
+		elsif (length($cleanpassword) > length($privatekey)) {
+			$privatekey = substr($cleanpassword, 0, length($privatekey));
+			}
+		else {
+			$@ = "Failed to merge password with symmetric encryption key";
+			return undef;
+			}
+		}
+
 	if ($module eq 'Crypt::RSA') {
 		$temp = Crypt::RSA->new();
 		$$rdata = $temp->decrypt(
@@ -340,6 +429,40 @@ sub _decrypt() {
 	return undef;
 	}
 
+#
+# This sub returns a random string
+# Expects an integer (length)
+#
+sub _genrandstring() {
+	my $l = shift;
+	my $key;
+	my $avoid;
+	my $module;
+	#
+	# First, we try one of the fancy randomness modules possibly in %_MISC_AVAILABLE
+	#
+	foreach (@{$_MISC_AVAILABLE{_order}}) {
+		$module = $_MISC_AVAILABLE{$_}{name};
+		if ($module eq "Crypt::Random") {
+			for (0..33,127..255) {
+				$avoid .= chr($_);
+				}
+			$key = Crypt::Random::makerandom_octet(
+				Length	=>	$l,
+				Skip		=>	$avoid,
+				);
+			return $key;
+			}
+		}
+	#
+	# If we've reached here, then no modules were found. We'll use perl's builtin rand() to generate
+	# the string
+	#
+	for (1..$l) {
+		$key .= chr(int(rand(93))+33);
+		}
+	return $key;
+	}
 
 #
 # Once a new client is connected it calls this to negotiate basics with the server
@@ -371,40 +494,80 @@ sub _client_negotiate() {
 			return undef;
 			}
 		if ($command eq "PF") {
+			#
+			# Password Failure
+			#
+			$client->{_authenticated} = 0;
 			$@ = "Server rejected supplied password";
 			return undef;
 			}
 		elsif ($command eq "CVF" && !$client->{_donotcheckversion}) {
+			#
+			# Compression Version Failure
+			#
 			$temp = $_COMPRESS_AVAILABLE{$client->{_compress}}{name};
 			$version = $_COMPRESS_AVAILABLE{$client->{_compress}}{version};
-			$@ = "Compression version mismatch for $temp : Local version $version remote version $P[0] : Upgrade both to same version or run the server in 'donotcompress' mode";
+			$@ = "Compression version mismatch for $temp : Local version $version remote version $P[0] : Upgrade both to same version or read the documentation of this module for how to forcefully ignore this problem";
 			return undef;
 			}
 		elsif ($command eq "EVF" && !$client->{_donotcheckversion}) {
+			#
+			# Encryption Version Failure
+			#
 			$temp = $_ENCRYPT_AVAILABLE{$client->{_encrypt}}{name};
 			$version = $_ENCRYPT_AVAILABLE{$client->{_encrypt}}{version};
-			$@ = "Encryption version mismatch for $temp : Local version $version remote version $P[0] : Upgrade both to same version or run the server in 'donotencrypt' mode";
+			$@ = "Encryption version mismatch for $temp : Local version $version remote version $P[0] : Upgrade both to same version or read the documentation of this module for how to forcefully ignore this problem";
 			return undef;
 			}
 		elsif ($command eq "EN") {
+			#
+			# End of negotiation
+			#
 			$data = "EN";
 			$evl = 'return("RETURN1");';
 			}
 		elsif ($command eq "VE") {
+			#
+			# Version of module
+			#
 			$client->{_version} = $P[0];
 			$data = "VE\x00$VERSION";
 			}
+		elsif ($command eq "SVE") {
+			#
+			# Version of the Storable module
+			#
+			$data = "SVE\x00" . $Storable::VERSION;
+			}
+		elsif ($command eq "SVF" && !$client->{_donotcheckversion}) {
+			#
+			# Storable Module Version Failure
+			#
+			$version = $Storable::VERSION;
+			$@ = "Version mismatch for the Storable module : Local version $version remote version $P[0] : Upgrade both to same version or read the documentation of this module for how to forcefully ignore this problem";
+			return undef;
+			}
 		elsif ($command eq "CS") {
-			$temp = &_munge($P[0]);
-			$temp = &_munge(crypt($client->{_password}, $temp));
+			#
+			# Crypt Salt
+			#
+			# We assume that we've authenticated successfully
+			$client->{_authenticated} = 1;
+			$temp = &_munge($client, crypt($client->{_password}, $P[0]));
 			$data = "CP\x00$temp";
 			}
 		elsif ($command eq "EK") {
-			$client->{_remotepublickey} = ($client->{_version} >= 0.07) ? &_munge($P[0]) : $P[0];
+			#
+			# Encryption key
+			#
+			$client->{_remotepublickey} = &_munge($client, $P[0]);
 			$data = "EK\x00";
-			$data .= ($client->{_version} >= 0.07) ? &_munge($client->{_localpublickey}) : $client->{_localpublickey};
+			$data .= &_munge($client, $client->{_localpublickey});
 			}
 		elsif ($command eq "EA") {
+			#
+			# Encryption available
+			#
 			$temp2 = "";
 			$version = "";
 			if(!$client->{_donotencrypt}) {
@@ -427,6 +590,9 @@ sub _client_negotiate() {
 				}
 			}
 		elsif ($command eq "CA") {
+			#
+			# Compression available
+			#
 			$temp2 = "";
 			$version = "";
 			if(!$client->{_donotcompress}) {
@@ -446,10 +612,13 @@ sub _client_negotiate() {
 				}
 			}
 		else {
+			#
+			# No Operation (do nothing)
+			#
 			$data = "NO";
 			}
 		if (defined $data && !&_send($client, $data, 0)) {
-			$@ = "Error negotiating with server. Could not send : $@";
+			$@ = "Error negotiating with server: Could not send : $@";
 			return undef;
 			}
 		#
@@ -464,7 +633,7 @@ sub _client_negotiate() {
 				}
 			}
 		}
-	$@ = "Client timed out while negotiating with server";
+	$@ = "Client timed out while negotiating with server: $@";
 	return undef;
 	}
 
@@ -491,7 +660,9 @@ sub _serverclient_negotiate() {
 	
 	$reply = $client->data(1);
 
+	# Let's avoid some strict claimings
 	if (!defined $reply) { $reply = "" };
+	if (!defined $client->{_negotiating_lastevent}) { $client->{_negotiating_lastevent} = "" }
 
 	if (length($reply)) {
 		#
@@ -505,6 +676,9 @@ sub _serverclient_negotiate() {
 			}
 		$client->{_negotiating_lastevent} = "received";
 		if ($command eq "EU") {
+			#
+			# Encryption Use
+			#
 			$client->{_encrypt} = $P[0];
 			if ($client->{_encrypt}) {
 				$version = $_ENCRYPT_AVAILABLE{$P[0]}{version};
@@ -514,11 +688,14 @@ sub _serverclient_negotiate() {
 				($client->{_localpublickey}, $client->{_localprivatekey}) = &_genkey($client->{_encrypt}) or return undef;
 				}
 			$temp = "EK\x00";
-			$temp .= ($client->{_version} >= 0.07) ? &_munge($client->{_localpublickey}) : $client->{_localpublickey};
+			$temp .= &_munge($client, $client->{_localpublickey});
 			unshift(@{$client->{_negotiating_commands}}, $temp);
 			}
 		elsif ($command eq "CP") {
-			if (&_munge($P[0]) eq crypt($client->{_password}, $client->{_cryptsalt}) ) {
+			#
+			# Crypt Password
+			#
+			if (&_munge($client, $P[0]) eq crypt($client->{_password}, $client->{_cryptsalt}) ) {
 				$client->{_authenticated} = 1;
 				}
 			else {
@@ -527,9 +704,23 @@ sub _serverclient_negotiate() {
 				}
 			}
 		elsif ($command eq "VE") {
+			#
+			# Version
+			#
 			$client->{_version} = $P[0];
 			}
+		elsif ($command eq "SVE") {
+			#
+			# Version of Storable
+			#
+			if ($P[0] ne $Storable::VERSION) {
+				unshift(@{$client->{_negotiating_commands}}, "SVF\x00" . $Storable::VERSION);
+				}
+			}
 		elsif ($command eq "CU") {
+			#
+			# Compression Use
+			#
 			$client->{_compress} = $P[0];
 			if ($client->{_compress}) {
 				$version = $_COMPRESS_AVAILABLE{$P[0]}{version};
@@ -539,9 +730,15 @@ sub _serverclient_negotiate() {
 				}
 			}
 		elsif ($command eq "EK") {
-			$client->{_remotepublickey} = ($client->{_version} >= 0.07) ? &_munge($P[0]) : $P[0];
+			#
+			# Encryption Key
+			#
+			$client->{_remotepublickey} = &_munge($client, $P[0]);
 			}
 		elsif ($command eq "EN") {
+			#
+			# End (of negotiation)
+			#
 			if ((defined $client->{_password} && length($client->{_password})) && !$client->{_authenticated}) {
 				return undef;
 				}
@@ -590,6 +787,8 @@ sub _serverclient_negotiate_sendnext() {
 		push (@{$client->{_negotiating_commands}}, $data);
 		$data = "VE\x00$VERSION";
 		push (@{$client->{_negotiating_commands}}, $data);
+		$data = "SVE";
+		push (@{$client->{_negotiating_commands}}, $data);
 		if (!$client->{_donotencrypt}) {
 			$data = "EA";
 			foreach (@{$_ENCRYPT_AVAILABLE{_order}}) {
@@ -606,12 +805,9 @@ sub _serverclient_negotiate_sendnext() {
 			}
 		if (defined $client->{_password}) {
 			if (!exists $client->{_cryptsalt}) {
-				$client->{_cryptsalt} = "";
-				for (1..2) {
-					$client->{_cryptsalt} .= chr(int(rand(93))+33);
-					}
+				$client->{_cryptsalt} = &_genrandstring(2);
 				}
-			$data = "CS\x00" . &_munge($client->{_cryptsalt});
+			$data = "CS\x00" . $client->{_cryptsalt};
 			push (@{$client->{_negotiating_commands}}, $data);
 			}
 		push (@{$client->{_negotiating_commands}}, "EN");
@@ -706,6 +902,7 @@ sub _new_client() {
 			Timeout		=>	30,
 			);
 		$self->{_mode} = "client";
+		$self->{_negotiating} = time;
 		}
 	else {
 		$sock = $para{_sock};
@@ -742,13 +939,19 @@ sub _new_client() {
 	$self->{_donotcompress} = ($para{donotcompress}) ? 1 : 0;
 	$self->{_donotencrypt} = ($para{donotencrypt}) ? 1 : 0;
 	$self->{_donotcheckversion} = ($para{donotcheckversion}) ? 1 : 0;
+	$self->{_localpublickey} = "";
 	$self->{_data} = [];
 	bless ($self, $class);
-	if ($self->{_mode} eq "client" && !&_client_negotiate($self)) {
-		# Bad server
-		$self->close();
-		$@ = "Error negotiating with server: $@";
-		return undef;
+	if ($self->{_mode} eq "client") {
+		if (!&_client_negotiate($self)) {
+			# Bad server
+			$self->close();
+			$@ = "Error negotiating with server: $@";
+			return undef;
+			}
+		else {
+			$self->{_negotiating} = 0;
+			}
 		}
 	return $self;
 	}
@@ -1080,7 +1283,7 @@ new() expects to be passed a hash. The following keys are accepted:
 
 =item donotcheckversion
 
-Set to 1 to force a client to continue connecting even if an encryption/compression module version mismatch is detected. (Highly unrecommended, upgrade modules instead)
+Set to 1 to force a client to continue connecting even if an encryption/compression/Storable module version mismatch is detected. (Using this is highly unrecommended, you should upgrade the module in question to the same version on both ends)
 (Optional and acceptable when mode is "client")
 
 =item donotcompress
@@ -1106,6 +1309,8 @@ Must be set to either "client" or "server" according to the type of object you w
 =item password
 
 Defines a password to use for the connection.  When mode is "server" this password will be required from clients before the full connection is accepted .  When mode is "client" this is the password that the server connecting to requires.
+
+Also, when encryption using a symmetric encryption module is used, this password is included as part of the secret "key" for encrypting the data.
 (Optional)
 
 =item port
@@ -1239,9 +1444,11 @@ B<[C]> Returns the handle of the socket (actually an L<IO::Socket|IO::Socket> ob
 
 Note that eventhough there's nothing stopping you from reading and writing directly to the socket handle you retrieve via this method, you should never do this since doing so would definately corrupt the internal protocol and may render your connection useless.  Instead you should use the send() and receive() methods.
 
-=item start()
+=item start(subref)
 
-B<[S]> Starts a server and does NOT return until the server is stopped via the stop() method.  This method is a simple while() wrapper around the do_one_loop() method and should be used if your entire program is dedicated ot being a server, and does not need to do anything else concurrently.
+B<[S]> Starts a server and does NOT return until the server is stopped via the stop() method.  This method is a simple while() wrapper around the do_one_loop() method and should be used if your entire program is dedicated to being a server, and does not need to do anything else concurrently.
+
+If you need to concurrently do other things when the server is running, then you can supply to start() the optional reference to a subroutine (very similar to the callback() method).  If that is supplied, it will be called every loop.  This is very similar to the callback subs, except that the called sub will NOT be passed anything (unlike normal client callbacks which are passed a client object).  The other alternative to performing other tasks concurrently is to not use the start() method at all and directly call do_one_loop() repeatedly in your own program.
 
 =item stop()
 
@@ -1255,7 +1462,11 @@ Clients and servers written using this class will automatically compress and/or 
 
 Compression will be automatically enabled if one (or more) of: L<Compress::Zlib|Compress::Zlib> or L<Compress::LZF|Compress::LZF> are installed on both the client and the server.
 
-Encryption will be automatically enabled if one (or more) of: L<Crypt::RSA|Crypt::RSA> or L<Crypt::Rijndael|Crypt::Rijndael>* or L<Crypt::RC6|Crypt::RC6>* or L<Crypt::Blowfish|Crypt::Blowfish>* or L<Crypt::DES_EDE3|Crypt::DES_EDE3>* or L<Crypt::DES|Crypt::DES>* or L<Crypt::CipherSaber|Crypt::CipherSaber> are installed on both the client and the server.
+As-symmetric encryption will be automatically enabled if L<Crypt::RSA|Crypt::RSA> is installed on both the client and the server.
+
+Symmetric encryption will be automatically enabled if one (or more) of: L<Crypt::Rijndael|Crypt::Rijndael>* or L<Crypt::RC6|Crypt::RC6>* or L<Crypt::Blowfish|Crypt::Blowfish>* or L<Crypt::DES_EDE3|Crypt::DES_EDE3>* or L<Crypt::DES|Crypt::DES>* or L<Crypt::CipherSaber|Crypt::CipherSaber> are installed on both the client and the server.
+
+Strong randomization will be automatically enabled if L<Crypt::Random|Crypt::Random> is installed; otherwise perl's internal rand() is used to generate random keys.
 
 Preference to the compression/encryption method used is determind by availablity checking following the order in which they are presented in the above lists.
 
@@ -1264,6 +1475,10 @@ Note that during the negotiation upon connection, the server and client will com
 To find out which module(s) have been negotiated for use you can use the compression() and encryption() methods.
 
 * Note that for this class's purposes, L<Crypt::CBC|Crypt::CBC> is a requirement to use any of the encryption modules with a * next to it's name in the above list.  So eventhough you may have these modules installed on both the client and the server, they will not be used unless L<Crypt::CBC|Crypt::CBC> is also installed on both ends.
+
+* Note that the nature of symmetric cryptography dictates sharing the secret keys somehow.  It is therefore highly recommend to use an As-symmetric cryptography module (such as Crypt::RSA) for serious encryption needs; as a determined hacker might find it trivial to decrypt your data with other symmetric modules.
+
+* Note that if symmetric cryptography is used, then it is highly recommended to also use the "password" feature on your servers and clients; since then the "password" will, aside from authentication,  be also used in the "secret key" to encrypt the data.  Without a password, the secret key has to be transmitted to the other side during the handshake, significantly lowering the overall security of the data.
 
 If the above modules are installed but you want to forcefully disable compression or encryption, supply the "donotcompress" and/or "donotencrypt" keys to the new() constructor.
 
@@ -1295,7 +1510,7 @@ If not successful, the variable $@ will contain a description of the error that 
 
 =item Incompatability with Net::EasyTCP version 0.01
 
-Version 0.02 and later have had their internal protocol modified to a fairly large degree.  This has made compatability with version 0.01 impossible.  If you're going to use version 0.02 or later (highly recommended), then you will need to make sure that none of the clients/servers are still using version 0.01.
+Version 0.02 and later have had their internal protocol modified to a fairly large degree.  This has made compatability with version 0.01 impossible.  If you're going to use version 0.02 or later (highly recommended), then you will need to make sure that none of the clients/servers are still using version 0.01.  It is highly recommended to use the same version of this module on both sides.
 
 =item Internal Protocol
 
@@ -1323,7 +1538,7 @@ Mina Naguib, <mnaguib@cpan.org>
 
 =head1 SEE ALSO
 
-Perl(1), L<IO::Socket>, L<IO::Select>, L<Compress::Zlib>, L<Compress::LZF>, L<Crypt::RSA>, L<Crypt::CBC>, L<Crypt::Rijndael>, L<Crypt::RC6>, L<Crypt::Blowfish>, L<Crypt::DES_EDE3>, L<Crypt::DES>, L<Crypt::CipherSaber>, defined()
+Perl(1), L<IO::Socket>, L<IO::Select>, L<Compress::Zlib>, L<Compress::LZF>, L<Crypt::RSA>, L<Crypt::CBC>, L<Crypt::Rijndael>, L<Crypt::RC6>, L<Crypt::Blowfish>, L<Crypt::DES_EDE3>, L<Crypt::DES>, L<Crypt::CipherSaber>, L<Crypt::Random>, defined(), rand()
 
 =head1 COPYRIGHT
 
@@ -1372,7 +1587,7 @@ sub addclientip() {
 	my $self = shift;
 	my @ips = @_;
 	if ($self->{_mode} ne "server") {
-		$@ = "$self->{_mode} cannot use method setcallback()";
+		$@ = "$self->{_mode} cannot use method addclientip()";
 		return undef;
 		}
 	foreach (@ips) {
@@ -1390,7 +1605,7 @@ sub deleteclientip() {
 	my $self = shift;
 	my @ips = @_;
 	if ($self->{_mode} ne "server") {
-		$@ = "$self->{_mode} cannot use method setcallback()";
+		$@ = "$self->{_mode} cannot use method deleteclientip()";
 		return undef;
 		}
 	foreach (@ips) {
@@ -1413,7 +1628,7 @@ sub setcallback() {
 		return undef;
 		}
 	foreach (keys %para) {
-		if (!exists $para{$_}) {
+		if (ref($para{$_}) ne "CODE") {
 			$@ = "Callback $_ $para{$_} does not exist";
 			return 0;
 			}
@@ -1428,6 +1643,7 @@ sub setcallback() {
 #
 sub start() {
 	my $self = shift;
+	my $callback = shift;
 	if ($self->{_mode} ne "server") {
 		$@ = "$self->{_mode} cannot use method start()";
 		return undef;
@@ -1439,6 +1655,9 @@ sub start() {
 	#
 	while (!$self->{_requeststop}) {
 		$self->do_one_loop() || return undef;
+		if ($callback && ref($callback) eq "CODE") {
+			&{$callback};
+			}
 		}
 	#
 	# If we reach here the server's been stopped
@@ -1679,7 +1898,7 @@ sub receive() {
 	while ((time - $lastactivity) < $timeout) {
 		@ready = $selector->can_read($timeout);
 		if (!@ready) {
-			if ($! =~ /interrupt/i) {
+			if (!$! || $! =~ /interrupt/i) {
 				next;
 				}
 			else {
