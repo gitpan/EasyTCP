@@ -1,5 +1,13 @@
 Revision history
 
+0.06
+	- Re-organized many internal functions to better manage memmory and free up memory no longer used
+	  sooner.
+	- Added new method clients() to return the list of clients or number of clients connected to a
+	  server.
+	- Modified the new() constructor to accept a "Welcome" message visible by telnetting into a server.
+
+
 0.05
 	- Fixed a bug where calling the receive() method may have failed if a signal (such as child dying)
 	  was delivered to the process at the same time.  The bug became apparent on heavily-stormed
@@ -7,13 +15,18 @@ Revision history
 	  fail.
 	- Re-wrote the server-side negotiating code to prevent it from blocking for couple of seconds during
 	  negotiating with a newly connected client.
+
+
 0.04
 	- Fixed a bug where older versions of Crypt::CBC were not called correctly causing "make test"
 	  and almost everything else to fail.
 	- Minor changes to the protocol negotiation
+
+
 0.03
 	- Added encryption support for Crypt::DES_EDE3, Crypt::DES and Crypt::Blowfish
 	- Added 2 new methods to determine what type of compression and encryption has been negotiated.
+
 
 0.02
 	- Implemented transparent compression
@@ -22,7 +35,6 @@ Revision history
 	- Re-wrote the test routine to use fork() and simulate a real-world scenario
 	- Minor bugfixes in receive()
 
+
 0.01
 	- original version; created by h2xs 1.19
-
-	

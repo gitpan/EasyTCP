@@ -58,10 +58,20 @@ require AutoLoader;
 # names by default without a very good reason. Use EXPORT_OK instead.
 # Do not simply export all your public functions/methods/constants.
 @EXPORT = qw();
-$VERSION = '0.05';
+$VERSION = '0.06';
 
 # Preloaded methods go here.
 
+#
+# This takes a client object and a callback keyword and calls back the associated sub if possible
+#
+sub _callback() {
+	my $client = shift;
+	my $type = shift;
+	if (!$client->{_negotiating} && $client->{_callbacks}->{$type}) {
+		&{$client->{_callbacks}->{$type}}($client);
+		}
+	}
 
 #
 # This takes in an encryption key id and generates a key(pair) and returns it/them according to the type
@@ -327,10 +337,11 @@ CN2:			foreach $temp (@P) {
 # Although this is much more complicated, it needs to be done so
 # the server does not block when a client is negotiating with it
 #
+# Expects a client object, and an (optional) reply
+#
 sub _serverclient_negotiate() {
 	my $client = shift;
-	my $reply = shift;
-	my $data;
+	my $reply = $client->data(1);
 	my @P;
 	my $command;
 
@@ -359,6 +370,9 @@ sub _serverclient_negotiate() {
 			$client->{_remotepublickey} = $P[0];
 			}
 		elsif ($command eq "EN") {
+			$client->{_negotiating} = 0;
+			delete $client->{_negotiating_lastevent};
+			delete $client->{_negotiating_commands};
 			return 1;
 			}
 		}
@@ -373,12 +387,17 @@ sub _serverclient_negotiate() {
 # This is called by _serverclient_negotiate(). It's job is to figure out what's the next command to send
 # to the other end and send it.
 #
+# Expects a client object and a class
+#
 sub _serverclient_negotiate_sendnext() {
 	my $client = shift;
+	my $class = $client;
 	my $data;
+	$class =~ s/=.*//g;
 
 	if (!defined $client->{_negotiating_commands}) {
 		# Let's initialize the sequence of commands we send
+		push (@{$client->{_negotiating_commands}}, "\r\n\r\n\r\n\r\n\r\n\r\n\r\n\r\n::  HELLO  ::  $class VERSION $VERSION  ::  SERVER READY  ::\r\n\r\n::  $client->{_welcome}  ::\r\n");
 		$data = "EA";
 		foreach (@_ENCRYPT_AVAILABLE) {
 			$data .= "\x00$_->[0]";
@@ -410,7 +429,7 @@ sub _serverclient_negotiate_sendnext() {
 #
 sub _parseinternaldata() {
 	my $client = shift;
-	my $data = shift;
+	my $data = $client->data(1);
 	my @P = split(/\x00/, $data);
 	my $command = shift(@P) || return undef;;
 	my $temp;
@@ -455,6 +474,7 @@ sub _new_client() {
 	my $sock;
 	my $self = {};
 	my $temp;
+	$class =~ s/=.*//g;
 	if (!$para{_sock}) {
 		if (!$para{host}) {
 			$@ = "Invalid host";
@@ -473,7 +493,6 @@ sub _new_client() {
 		$self->{_mode} = "client";
 		}
 	else {
-		$class =~ s/=.*//g;
 		$sock = $para{_sock};
 		$self->{_mode} = "serverclient";
 		}
@@ -485,6 +504,7 @@ sub _new_client() {
 	$self->{_sock} = $sock;
 	$self->{_donotcompress} = ($para{donotcompress}) ? 1 : 0;
 	$self->{_donotencrypt} = ($para{donotencrypt}) ? 1 : 0;
+	$self->{_data} = [];
 	bless ($self, $class);
 	if ($self->{_mode} eq "client" && !&_client_negotiate($self)) {
 		# Bad server
@@ -497,6 +517,8 @@ sub _new_client() {
 
 #
 # This creates a new listening server object and returns it, or returns undef if unsuccessful
+#
+# Expects a class
 #
 sub _new_server() {
 	my $class = shift;
@@ -520,18 +542,19 @@ sub _new_server() {
 	$sock->autoflush(1);
 	$self->{_sock} = $sock;
 	$self->{_mode} = "server";
+	$self->{_welcome} = $para{welcome};
 	$self->{_donotcompress} = ($para{donotcompress}) ? 1 : 0;
 	$self->{_donotencrypt} = ($para{donotencrypt}) ? 1 : 0;
+	$self->{_clients} = {};
 	bless($self, $class);
 	return $self;
 	}
 
 #
-# This takes a reference to a scalar, extracts a fully qualified data out of it
-# if possible, modifies the original scalar to what's left, does decryption and decompression as necessary
+# This takes a client object and tries to extract a full packet out of it's received data buffer
 # If no valid data found, returns undef
-# Otherwise returns the read data and the realdata bit value in a 2-element array if wantarray,
-# or just the data if not wantarray
+# If data found, it deletes it from the data buffer and pushes it into the data field
+# Then returns 1 if the data was real data, or 0 if the data was not real data (internal data)
 #
 sub _extractdata() {
 	my $client = shift;
@@ -575,15 +598,11 @@ sub _extractdata() {
 		$data = thaw($data);
 		if (!$data) {
 			$@ = "Error decompressing complex structure: $!";
-			$data = undef;
+			return undef;
 			}
 		}
-	if (wantarray) {
-		return ($data, $realdata);
-		}
-	else {
-		return $data;
-		}
+	push ( @{$client->{_data}} , $data );
+	return ($realdata);
 	}
 
 #
@@ -790,13 +809,30 @@ What you won't have to do is worry about how the command will get there, about l
 
 =head1 CONSTRUCTOR
 
-B<new(%hash)>
+=over 4
+
+=item new(%hash)
 
 Constructs and returns a new Net::EasyTCP object.  Such an object behaves in one of two modes (that needs to be supplied to new() on creation time).  You can create either a server object (which accepts connections from several clients) or a client object (which initiates a connection to a server).
 
 new() expects to be passed a hash. The following keys are accepted:
 
 =over 4
+
+=item donotcompress
+
+Set to 1 to forcefully disable L<compression|COMPRESSION AND ENCRYPTION> even if the appropriate module(s) are found.
+(Optional)
+
+=item donotencrypt
+
+Set to 1 to forcefully disable L<encryption|COMPRESSION AND ENCRYPTION> even if the appropriate module(s) are found.
+(Optional)
+
+=item host
+
+Must be set to the hostname/IP address to connect to.
+(Mandatory when mode is "client")
 
 =item mode
 
@@ -808,20 +844,12 @@ Must be set to either "client" or "server" according to the type of object you w
 Must be set to the port the client connects to (if mode is "client") or to the port to listen to (if mode is "server"). If you're writing a client+server pair, they must both use the same port number.
 (Mandatory)
 
-=item host
+=item welcome
 
-Must be set to the hostname/IP address to connect to.
-(Mandatory when mode is "client")
+If someone uses an interactive telnet program to telnet to the server, they will see this welcome message.
+(Optional and acceptable only when mode is "server")
 
-=item donotcompress
-
-Set to 1 to forcefully disable L<compression|COMPRESSION AND ENCRYPTION> even if the appropriate module(s) are found.
-(Optional)
-
-=item donotencrypt
-
-Set to 1 to forcefully disable L<encryption|COMPRESSION AND ENCRYPTION> even if the appropriate module(s) are found.
-(Optional)
+=back
 
 =back
 
@@ -836,6 +864,10 @@ B<[S] = Available to objects created as mode "server">
 =item callback(%hash)
 
 See setcallback()
+
+=item clients()
+
+B<[S]> Returns all the clients currently connected to the server.  If called in array context will return an array of client objects.  If called in scalar context will return the number of clients connected.
 
 =item close()
 
@@ -873,7 +905,7 @@ B<[S]> Returns true if the server is running (started), false if it is not.
 
 =item send($data)
 
-B<[C]> Sends data to a server.  It can be used on client objects you create with the new() constructor, or with client objects passed to your callback subs by a running server.
+B<[C]> Sends data to a server.  It can be used on client objects you create with the new() constructor, clients objects returned by the clients() method, or with client objects passed to your callback subs by a running server.
 
 It accepts one parameter, and that is the data to send.  The data can be a simple scalar or a reference to something more complex.
 
@@ -944,7 +976,21 @@ If the above modules are installed but you want to forcefully disable compressio
 
 The constructor and all methods return something that evaluates to true when successful, and to false when not successful.
 
-The only exception to the above rule is the data() method.  If the data received is an empty string or the string "0" then it will evaluate to false which is probably not what you want.  In that case check that the data you just read is defined.
+There are a couple of exceptions to the above rule and they are the following methods:
+
+=over 4
+
+=item *
+
+clients()
+
+=item *
+
+data()
+
+=back
+
+The above methods may return something that evaluates to false (such as an empty string, an empty array, or the string "0") eventhough there was no error.  In that case check if the returned value is defined or not, using the defined() Perl function.
 
 If not successful, the variable $@ will contain a description of the error that occurred.
 
@@ -982,7 +1028,7 @@ Mina Naguib, <mnaguib@cpan.org>
 
 =head1 SEE ALSO
 
-L<IO::Socket>, L<IO::Select>, L<Compress::Zlib>, L<Compress::LZF>, L<Crypt::CBC>, L<Crypt::DES_EDE3>, L<Crypt::Blowfish>, L<Crypt::DES>, L<Crypt::CipherSaber>
+Perl(1), L<IO::Socket>, L<IO::Select>, L<Compress::Zlib>, L<Compress::LZF>, L<Crypt::CBC>, L<Crypt::DES_EDE3>, L<Crypt::Blowfish>, L<Crypt::DES>, L<Crypt::CipherSaber>, defined()
 
 =head1 COPYRIGHT
 
@@ -996,6 +1042,13 @@ Copyright (C) 2001 Mina Naguib.  All rights reserved.  Use is subject to the Per
 sub new() {
 	my $class = shift;
 	my %para = @_;
+	# Let's lowercase all keys in %para
+	foreach (keys %para) {
+		if ($_ ne lc($_)) {
+			$para{lc($_)} = $para{$_};
+			delete $para{$_};
+			}
+		}
 	if ($para{mode} =~ /^c/i) {
 		return &_new_client($class, %para);
 		}
@@ -1032,7 +1085,7 @@ sub setcallback() {
 			$@ = "Callback $_ $para{$_} does not exist";
 			return 0;
 			}
-		$self->{"_callback_$_"} = $para{$_};
+		$self->{_callbacks}->{$_} = $para{$_};
 		}
 	return 1;
 	}
@@ -1046,9 +1099,8 @@ sub start() {
 	my $self = shift;
 	my @ready;
 	my $clientsock;
-	my %clientobject;
 	my $tempdata;
-	my $data;
+	my $serverclient;
 	my $realdata;
 	my $result;
 	my $error;
@@ -1073,57 +1125,47 @@ MLOOP:	while (!$self->{_requeststop}) {
 					}
 				$_SERIAL++;
 				$_SELECTOR->add($clientsock);
-				$clientobject{$clientsock} = &_new_client($self, "_sock" => $clientsock);
-				$clientobject{$clientsock}->{_donotencrypt} = $self->{_donotencrypt};
-				$clientobject{$clientsock}->{_donotcompress} = $self->{_donotcompress};
-				$clientobject{$clientsock}->{_serial} = $_SERIAL;
-				$clientobject{$clientsock}->{_negotiating} = time;
+				$self->{_clients}->{$clientsock} = &_new_client($self, "_sock" => $clientsock);
+				$self->{_clients}->{$clientsock}->{_donotencrypt} = $self->{_donotencrypt};
+				$self->{_clients}->{$clientsock}->{_donotcompress} = $self->{_donotcompress};
+				$self->{_clients}->{$clientsock}->{_callbacks} = $self->{_callbacks};
+				$self->{_clients}->{$clientsock}->{_welcome} = $self->{_welcome};
+				$self->{_clients}->{$clientsock}->{_serial} = $_SERIAL;
+				$self->{_clients}->{$clientsock}->{_negotiating} = time;
 				}
 			else {
 				# One of the client sockets are ready
 				$result = sysread($_, $tempdata, 65536);
+				$serverclient = $self->{_clients}->{$_};
 				if (!defined $result) {
 					# Error somewhere during reading
-					if (!$clientobject{$_}->{_negotiating}) {
-						&{$self->{_callback_disconnect}}($clientobject{$_}) if ($self->{_callback_disconnect});
-						}
-					$clientobject{$_}->close();
-					delete $clientobject{$_};
+					&_callback($serverclient, "disconnect");
+					$serverclient->close();
+					delete $self->{_clients}->{$_};
 					}
 				elsif ($result == 0) {
 					# Client closed connection
-					if (!$clientobject{$_}->{_negotiating}) {
-						&{$self->{_callback_disconnect}}($clientobject{$_}) if ($self->{_callback_disconnect});
-						}
-					$clientobject{$_}->close();
-					delete $clientobject{$_};
+					&_callback($serverclient, "disconnect");
+					$serverclient->close();
+					delete $self->{_clients}->{$_};
 					}
 				else {
 					# Client sent us some good data (not necessarily a full packet)
-					$clientobject{$_}->{_databuffer} .= $tempdata;
-					while (1) {
-						($data, $realdata) = &_extractdata($clientobject{$_});
-						if (!defined $data) {
-							# We found nothing
-							last;
+					$serverclient->{_databuffer} .= $tempdata;
+					while (defined ($realdata = &_extractdata($serverclient)) ) {
+						if (!$realdata && $serverclient->{_negotiating}) {
+							# We found something, but it's negotiating data
+							if (&_serverclient_negotiate($serverclient) ) {
+								&_callback($serverclient, "connect");
+								}
 							}
 						elsif (!$realdata) {
-							# We found something, but it's internal protocol data
-							if ($clientobject{$_}->{_negotiating}) {
-								$result = &_serverclient_negotiate($clientobject{$_}, $data);
-								if ($result) {
-									$clientobject{$_}->{_negotiating} = 0;
-									&{$self->{_callback_connect}}($clientobject{$_}) if ($self->{_callback_connect});
-									}
-								}
-							else {
-								&_parseinternaldata($clientobject{$_}, $data);
-								}
+							# It's just internal protocol data
+							&_parseinternaldata($serverclient);
 							}
 						else {
 							# We found something and it's real data
-							$clientobject{$_}->{_data} = $data;
-							&{$self->{_callback_data}}($clientobject{$_}) if ($self->{_callback_data});
+							&_callback($serverclient, "data");
 							}
 						}
 					}
@@ -1131,21 +1173,23 @@ MLOOP:	while (!$self->{_requeststop}) {
 			}
 		# Now we check on all the serverclients still negotiating and help them finish negotiating
 		# or weed out the ones timing out
-		foreach (keys %clientobject) {
-			if ($clientobject{$_}->{_negotiating}) {
-				$result = &_serverclient_negotiate($clientobject{$_});
-				if ($result) {
-					$clientobject{$_}->{_negotiating} = 0;
-					&{$self->{_callback_connect}}($clientobject{$_}) if ($self->{_callback_connect});
+		foreach (keys %{$self->{_clients}}) {
+			$serverclient = $self->{_clients}->{$_};
+			if ($serverclient->{_negotiating}) {
+				if (&_serverclient_negotiate($serverclient) ) {
+					&_callback($serverclient, "connect");
 					}
-				elsif ((time-$clientobject{$_}->{_negotiating}) > $negotiatingtimeout) {
-					$clientobject{$_}->close();
-					delete $clientobject{$_};
+				elsif ((time - $serverclient->{_negotiating}) > $negotiatingtimeout) {
+					$serverclient->close();
+					delete $self->{_clients}->{$_};
 					}
 				}
 			}
 		}
+	# If we reach here the server's been stopped
+	$self->{_clients} = {};
 	$self->{_running} = 0;
+	$self->{_requeststop} = 0;
 	if ($error) {
 		$@ = $error;
 		return undef;
@@ -1200,7 +1244,24 @@ sub serial() {
 #
 sub data() {
 	my $self = shift;
-	return $self->{_data};
+	my $returnlatest;
+	my $data;
+	if ($self->{_mode} ne "client" && $self->{_mode} ne "serverclient") {
+		$@ = "$self->{_mode} cannot use method data()";
+		return undef;
+		}
+	if ($returnlatest) {
+		$data = pop ( @{$self->{_data}} );
+		}
+	else {
+		$data = shift ( @{$self->{_data}} );
+		}
+	if (defined $data) {
+		return $data;
+		}
+	else {
+		return undef;
+		}
 	}
 
 #
@@ -1214,7 +1275,6 @@ sub receive() {
 	my $timeout = shift || 300;
 	my $returninternaldata = shift || 0;
 	my $temp;
-	my $data;
 	my $realdata;
 	my $result;
 	my $lastactivity = time;
@@ -1252,20 +1312,19 @@ sub receive() {
 			$lastactivity = time;
 			$self->{_databuffer} .= $temp;
 			while (1) {
-				($data, $realdata) = &_extractdata($self);
-				if (defined $data) {
+				if (defined($realdata = &_extractdata($self)) ) {
 					# We read something
 					if ($realdata) {
 						# It's real data that belongs to the application
-						return $data;
+						return $self->data(1);
 						}
 					elsif ($returninternaldata) {
 						# It's internal but we've been instructed to return it
-						return $data;
+						return $self->data(1);
 						}
 					else {
 						# It's internal data so we parse it
-						&_parseinternaldata($self, $data);
+						&_parseinternaldata($self);
 						}
 					}
 				else {
@@ -1301,6 +1360,8 @@ sub close() {
 		}
 	$self->{_sock}->close();
 	$self->{_sock} = undef;
+	$self->{_data} = [];
+	$self->{_databuffer} = undef;
 	return 1;
 	}
 
@@ -1371,3 +1432,34 @@ sub socket() {
 		}
 	return ($self->{_sock} || undef);
 	}
+
+#
+# This returns an array of all the clients connected to a server in array context
+# or the number of clients in scalar context
+# or undef if there are no clients or error
+#
+sub clients() {
+	my $self = shift;
+	my @clients;
+	if ($self->{_mode} ne "server") {
+		$@ = "$self->{_mode} cannot use method clients()";
+		return undef;
+		}
+	foreach ( values %{$self->{_clients}} ) {
+		if (!$_->{_negotiating}) {
+			push (@clients, $_);
+			}
+		}
+	if (@clients) {
+		if (wantarray) {
+			return (@clients);
+			}
+		else {
+			return (scalar @clients);
+			}
+		}
+	else {
+		return undef;
+		}
+	}
+
