@@ -1,5 +1,9 @@
 Revision history
 
+0.04
+	- Fixed a bug where older versions of Crypt::CBC were not called correctly causing "make test"
+	  and almost everything else to fail.
+	- Minor changes to the protocol negotiation
 0.03
 	- Added encryption support for Crypt::DES_EDE3, Crypt::DES and Crypt::Blowfish
 	- Added 2 new methods to determine what type of compression and encryption has been negotiated.

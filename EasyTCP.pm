@@ -18,8 +18,8 @@ BEGIN {
 		);
 	my @_encrypt_modules = (
 		['3', 'Crypt::CBC', 0],
-		['6', 'Crypt::DES_EDE3', 1],
 		['4', 'Crypt::Blowfish', 1],
+		['6', 'Crypt::DES_EDE3', 1],
 		['5', 'Crypt::DES', 1],
 		['2', 'Crypt::CipherSaber', 0],
 		);
@@ -58,7 +58,7 @@ require AutoLoader;
 # names by default without a very good reason. Use EXPORT_OK instead.
 # Do not simply export all your public functions/methods/constants.
 @EXPORT = qw();
-$VERSION = '0.03';
+$VERSION = '0.04';
 
 # Preloaded methods go here.
 
@@ -183,38 +183,17 @@ sub _encrypt() {
 		return 1;
 		}
 	elsif ($method eq 'Crypt::Blowfish') {
-		$temp = Crypt::CBC->new({
-			'key'		   => $publickey,
-			'cipher'	   => $method,
-			'iv'		   => '$KJh#(}q',
-			'regenerate_key'   => 0,
-			'padding'	   => 'space',
-			'prepend_iv'       => 0,
-			});
+		$temp = Crypt::CBC->new($publickey, $method);
 		$$rdata = $temp->encrypt($$rdata);
 		return 1;
 		}
 	elsif ($method eq 'Crypt::DES_EDE3') {
-		$temp = Crypt::CBC->new({
-			'key'		   => $publickey,
-			'cipher'	   => $method,
-			'iv'		   => '$KJh#(}q',
-			'regenerate_key'   => 0,
-			'padding'	   => 'space',
-			'prepend_iv'       => 0,
-			});
+		$temp = Crypt::CBC->new($publickey, $method);
 		$$rdata = $temp->encrypt($$rdata);
 		return 1;
 		}
 	elsif ($method eq 'Crypt::DES') {
-		$temp = Crypt::CBC->new({
-			'key'		   => $publickey,
-			'cipher'	   => $method,
-			'iv'		   => '$KJh#(}q',
-			'regenerate_key'   => 0,
-			'padding'	   => 'space',
-			'prepend_iv'       => 0,
-			});
+		$temp = Crypt::CBC->new($publickey, $method);
 		$$rdata = $temp->encrypt($$rdata);
 		return 1;
 		}
@@ -243,38 +222,17 @@ sub _decrypt() {
 		return 1;
 		}
 	elsif ($method eq 'Crypt::Blowfish') {
-		$temp = Crypt::CBC->new({
-			'key'		   => $privatekey,
-			'cipher'	   => $method,
-			'iv'		   => '$KJh#(}q',
-			'regenerate_key'   => 0,
-			'padding'	   => 'space',
-			'prepend_iv'       => 0,
-			});
+		$temp = Crypt::CBC->new($privatekey, $method);
 		$$rdata = $temp->decrypt($$rdata);
 		return 1;
 		}
 	elsif ($method eq 'Crypt::DES_EDE3') {
-		$temp = Crypt::CBC->new({
-			'key'		   => $privatekey,
-			'cipher'	   => $method,
-			'iv'		   => '$KJh#(}q',
-			'regenerate_key'   => 0,
-			'padding'	   => 'space',
-			'prepend_iv'       => 0,
-			});
+		$temp = Crypt::CBC->new($privatekey, $method);
 		$$rdata = $temp->decrypt($$rdata);
 		return 1;
 		}
 	elsif ($method eq 'Crypt::DES') {
-		$temp = Crypt::CBC->new({
-			'key'		   => $privatekey,
-			'cipher'	   => $method,
-			'iv'		   => '$KJh#(}q',
-			'regenerate_key'   => 0,
-			'padding'	   => 'space',
-			'prepend_iv'       => 0,
-			});
+		$temp = Crypt::CBC->new($privatekey, $method);
 		$$rdata = $temp->decrypt($$rdata);
 		return 1;
 		}
@@ -388,11 +346,10 @@ sub _serverclient_negotiate() {
 		}
 	push (@commands, $data);
 
+	push (@commands, "EN");
+
 	while (@commands) {
 		$data = shift(@commands);
-		if (!@commands && $data ne "EN") {
-			@commands = ("EN");
-			}
 		if (!&_send($client, $data, 0)) {
 			$@ = "Error negotiating (1) : $@";
 			return undef;
@@ -411,7 +368,7 @@ sub _serverclient_negotiate() {
 		if ($command eq "EU") {
 			$client->{_encrypt} = $P[0];
 			($client->{_localpublickey}, $client->{_localprivatekey}) = &_genkey($client->{_encrypt});
-			push(@commands, "EK\x00$client->{_localpublickey}");
+			unshift(@commands, "EK\x00$client->{_localpublickey}");
 			}
 		elsif ($command eq "CU") {
 			$client->{_compress} = $P[0];
@@ -508,6 +465,7 @@ sub _new_client() {
 		$@ = "Could not connect to $para{host}:$para{port}: $!";
 		return undef;
 		}
+	$sock->autoflush(1);
 	$self->{_sock} = $sock;
 	$self->{_mode} = "client";
 	$self->{_donotcompress} = ($para{donotcompress}) ? 1 : 0;
@@ -544,6 +502,7 @@ sub _new_server() {
 		$@ = "Could not create listening socket on port $para{port}: $!";
 		return undef;
 		}
+	$sock->autoflush(1);
 	$self->{_sock} = $sock;
 	$self->{_mode} = "server";
 	$self->{_donotcompress} = ($para{donotcompress}) ? 1 : 0;
@@ -725,7 +684,7 @@ Transparent compression
 
 =over 4
 
-=item SERVER EXAMPLE
+=item SERVER EXAMPLE:
 
 	use Net::EasyTCP;
 
@@ -934,6 +893,12 @@ Called when an existing client disconnects
 Whenever a callback sub is called, it is passed a single parameter, a CLIENT OBJECT. The callback code may then use any of the methods available to client objects to do whatever it wants to do (Read data sent from the client, reply to the client, close the client connection etc...)
 
 
+=item socket()
+
+B<[C]> Returns the handle of the socket (actually an L<IO::Socket|IO::Socket> object) associated with the supplied object.  This is useful if you're interested in using L<IO::Select|IO::Select> or select() and want to add a client object's socket handle to the select list.
+
+Note that eventhough there's nothing stopping you from reading and writing directly to the socket handle you retrieve via this method, you should never do this since doing so would definately corrupt the internal protocol and may render your connection useless.  Instead you should use the send() and receive() methods.
+
 =item start()
 
 B<[S]> Starts a server and does NOT return until the server is stopped via the stop() method.  Once a server is started it will accept new client connections as well as parse incoming data from clients and fire off the appropriate callbacks' subs.
@@ -1002,7 +967,7 @@ Mina Naguib, <mnaguib@cpan.org>
 
 =head1 SEE ALSO
 
-L<IO::Socket>, L<Compress::Zlib>, L<Compress::LZF>, L<Crypt::CBC>, L<Crypt::DES_EDE3>, L<Crypt::Blowfish>, L<Crypt::DES>, L<Crypt::CipherSaber>
+L<IO::Socket>, L<IO::Select>, L<Compress::Zlib>, L<Compress::LZF>, L<Crypt::CBC>, L<Crypt::DES_EDE3>, L<Crypt::Blowfish>, L<Crypt::DES>, L<Crypt::CipherSaber>
 
 =head1 COPYRIGHT
 
@@ -1351,4 +1316,16 @@ sub compression() {
 			}
 		}
 	return undef;
+	}
+
+#
+# This returns the IO::Socket object associated with a connection
+#
+sub socket() {
+	my $self = shift;
+	if ($self->{_mode} ne "client" && $self->{_mode} ne "serverclient") {
+		$@ = "$self->{_mode} cannot use method socket()";
+		return undef;
+		}
+	return ($self->{_sock} || undef);
 	}
