@@ -1,12 +1,22 @@
 Revision history
 
-0.13	- Fixed a bug where supplying 4 parameters to substr() choked on older versions of perl
-          substr() calls now only use 3 paramaters.
+0.14
+	- Implemented a do_one_loop() method to allow servers you write to do other things
+	  concurrently instead of the old way of being dedicated through the start() method.
+	- Localized some variables to the server object.  This prevented running multiple servers
+	  previously within the same program.
+	- Added some more internal notes.
+
+
+0.13
+	- Fixed a bug where supplying 4 parameters to substr() choked on older versions of perl
+	  substr() calls now only use 3 paramaters.
 	- Added 2 new methods, addclientip() and deleteclientip() which may be used to restrict
 	  a server to only accept connections from certain IP addresses.
 
 
-0.12	- Fixed a bug where if Crypt::RSA was not installed the test suite would fail.
+0.12
+	- Fixed a bug where if Crypt::RSA was not installed the test suite would fail.
 	- The welcome message viewable via telnet-ting into the server is now formatted nicer.
 
 

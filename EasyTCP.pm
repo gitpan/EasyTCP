@@ -1,7 +1,7 @@
 package Net::EasyTCP;
 
 use strict;
-use vars qw($VERSION @ISA @EXPORT @EXPORT_OK $_SERIAL $_SELECTOR %_COMPRESS_AVAILABLE %_ENCRYPT_AVAILABLE);
+use vars qw($VERSION @ISA @EXPORT @EXPORT_OK $_SERIAL %_COMPRESS_AVAILABLE %_ENCRYPT_AVAILABLE);
 
 use IO::Socket;
 use IO::Select;
@@ -82,7 +82,7 @@ require AutoLoader;
 # names by default without a very good reason. Use EXPORT_OK instead.
 # Do not simply export all your public functions/methods/constants.
 @EXPORT = qw();
-$VERSION = '0.13';
+$VERSION = '0.14';
 
 # Preloaded methods go here.
 
@@ -490,10 +490,13 @@ sub _serverclient_negotiate() {
 		}
 	
 	$reply = $client->data(1);
+
 	if (!defined $reply) { $reply = "" };
 
 	if (length($reply)) {
+		#
 		# We're parsing a reply the other end sent us
+		#
 		@P = split(/\x00/, $reply);
 		$command = shift(@P);
 		if (!$command) {
@@ -539,7 +542,7 @@ sub _serverclient_negotiate() {
 			$client->{_remotepublickey} = ($client->{_version} >= 0.07) ? &_munge($P[0]) : $P[0];
 			}
 		elsif ($command eq "EN") {
-			if (length($client->{_password}) && !$client->{_authenticated}) {
+			if ((defined $client->{_password} && length($client->{_password})) && !$client->{_authenticated}) {
 				return undef;
 				}
 			else {
@@ -720,9 +723,18 @@ sub _new_client() {
 		$self->{_remoteip} = $para{_remoteip};
 		}
 	else {
-		$temp = getpeername($sock) || (($@ = "Error getting peername") && return undef);
-		($remoteport, $remoteip) = sockaddr_in($temp) or (($@ = "Error getting socket address") && return undef);
-		$self->{_remoteip} = inet_ntoa($remoteip) || (($@ = "Error determing remote IP") && return undef);
+		if (!($temp = getpeername($sock))) {
+			$@ = "Error getting peername";
+			return undef;
+			}
+		if (!(($remoteport, $remoteip) = sockaddr_in($temp))) {
+			$@ = "Error getting socket address";
+			return undef;
+			}
+		if (!($self->{_remoteip} = inet_ntoa($remoteip))) {
+			$@ = "Error determing remote IP";
+			return undef;
+			}
 		$self->{_remoteport} = $remoteport;
 		}
 	$self->{_sock} = $sock;
@@ -767,6 +779,8 @@ sub _new_server() {
 		}
 	$sock->autoflush(1);
 	$self->{_sock} = $sock;
+	$self->{_selector} = new IO::Select;
+	$self->{_selector}->add($sock);
 	$self->{_mode} = "server";
 	$self->{_welcome} = $para{welcome};
 	$self->{_password} = $para{password};
@@ -927,7 +941,7 @@ __END__
 
 =head1 NAME
 
-Net::EasyTCP - Easily create TCP/IP clients and servers
+Net::EasyTCP - Easily create secure, bandwidth-friendly TCP/IP clients and servers
 
 =head1 FEATURES
 
@@ -1144,13 +1158,17 @@ B<[C]> Retrieves the previously-retrieved data associated with a client object. 
 
 =item deleteclientip(@array)
 
-B<[S]> Deletes an IP address (or IP addresses) to the list of allowed clients to a server.  The IP address (or IP addresses) supplied will no longer be able to connect to the server.
+B<[S]> Deletes an IP address (or IP addresses) from the list of allowed clients to a server.  The IP address (or IP addresses) supplied will no longer be able to connect to the server.
 
 The compliment of this function is addclientip() .
 
 =item disconnect()
 
 See close()
+
+=item do_one_loop()
+
+B<[S]> Instructs a server object to "do one loop" and return ASAP.  This method needs to be called VERY frequently for a server object to function as expected (either through some sort of loop inside your program if you need to do other things beside serve clients, or via the start() method if your entire program is dedicated to serving clients).  Each one loop will help the server do it's job, including accepting new clients, receiving data from them, firing off the appropriate callbacks etc.
 
 =item encryption()
 
@@ -1223,7 +1241,7 @@ Note that eventhough there's nothing stopping you from reading and writing direc
 
 =item start()
 
-B<[S]> Starts a server and does NOT return until the server is stopped via the stop() method.  Once a server is started it will accept new client connections as well as parse incoming data from clients and fire off the appropriate callbacks' subs.
+B<[S]> Starts a server and does NOT return until the server is stopped via the stop() method.  This method is a simple while() wrapper around the do_one_loop() method and should be used if your entire program is dedicated ot being a server, and does not need to do anything else concurrently.
 
 =item stop()
 
@@ -1405,11 +1423,39 @@ sub setcallback() {
 	}
 
 #
-# This method starts the server and does not return
-# The server then listens for new connections as well as accepts data from existing connections
-# And fires off any necessary callback events when necessary
+# This method starts the server and does not return until stop() is called.
+# All other behavior is delegated to do_one_loop()
 #
 sub start() {
+	my $self = shift;
+	if ($self->{_mode} ne "server") {
+		$@ = "$self->{_mode} cannot use method start()";
+		return undef;
+		}
+	$self->{_running} = 1;
+	$self->{_requeststop} = 0;
+	#
+	# Let's loop until we're stopped:
+	#
+	while (!$self->{_requeststop}) {
+		$self->do_one_loop() || return undef;
+		}
+	#
+	# If we reach here the server's been stopped
+	#
+	$self->{_running} = 0;
+	$self->{_requeststop} = 0;
+	return 1;
+	}
+
+#
+# This method does "one loop" of server work and returns ASAP
+# It should be called very frequently, either through a while() loop in the program
+# or through the start() method
+#
+# It accepts new clients, accepts data from them, and fires off any callback events as necessary
+#
+sub do_one_loop() {
 	my $self = shift;
 	my @ready;
 	my $clientsock;
@@ -1417,127 +1463,135 @@ sub start() {
 	my $serverclient;
 	my $realdata;
 	my $result;
-	my $error;
 	my $negotiatingtimeout = 45;
-	my $lastglobalkeygentime;
 	my $peername;
 	my $remoteport;
 	my $remoteip;
-	$_SELECTOR = new IO::Select;
 	if ($self->{_mode} ne "server") {
 		$@ = "$self->{_mode} cannot use method start()";
 		return undef;
 		}
-	$self->{_running} = 1;
-	$self->{_requeststop} = 0;
-	$_SELECTOR->add($self->{_sock});
-	$lastglobalkeygentime = time;
-MLOOP:	while (!$self->{_requeststop}) {
-		@ready = $_SELECTOR->can_read(1);
-		foreach (@ready) {
-			if ($_ == $self->{_sock}) {
-				# The SERVER SOCKET is ready for accepting a new client
-				$clientsock = $self->{_sock}->accept();
-				if (!$clientsock) {
-					$error = "Error while accepting new connection: $!";
-					last MLOOP;
-					}
-				# We get remote IP and port, we'll need them to see if client is allowed or not
-				$peername = getpeername($clientsock) or next;
-				($remoteport, $remoteip) = sockaddr_in($peername) or next;
-				$remoteip = inet_ntoa($remoteip) or next;
-				# We create a new client object
-				# We see if client is allowed to connect to us
-				if (scalar(keys %{$self->{_clientip}}) && !$self->{_clientip}{$remoteip}) {
-					# Client's IP is not allowed to connect to us
-					close ($clientsock);
-					}
-				else {
-					# We add it to our pool
-					$_SELECTOR->add($clientsock);
-					# We create a new client object:
-					$self->{_clients}->{$clientsock} = &_new_client(
-						$self,
-						"_sock"		=>	$clientsock,
-						"_remoteport"	=>	$remoteport,
-						"_remoteip"	=>	$remoteip
-						);
-					# And we make it inherit some stuff from the server
-					$self->{_clients}->{$clientsock}->{_serial} = ++$_SERIAL;
-					$self->{_clients}->{$clientsock}->{_donotencrypt} = $self->{_donotencrypt};
-					$self->{_clients}->{$clientsock}->{_donotcompress} = $self->{_donotcompress};
-					$self->{_clients}->{$clientsock}->{_password} = $self->{_password};
-					$self->{_clients}->{$clientsock}->{_callbacks} = $self->{_callbacks};
-					$self->{_clients}->{$clientsock}->{_welcome} = $self->{_welcome};
-					}
+	$self->{_lastglobalkeygentime} ||= time;
+	@ready = $self->{_selector}->can_read(1);
+	foreach (@ready) {
+		if ($_ == $self->{_sock}) {
+			#
+			# The SERVER SOCKET is ready for accepting a new client
+			#
+			$clientsock = $self->{_sock}->accept();
+			if (!$clientsock) {
+				$@ = "Error while accepting new connection: $!";
+				return undef;
+				}
+			#
+			# We get remote IP and port, we'll need them to see if client is allowed or not
+			#
+			$peername = getpeername($clientsock) or next;
+			($remoteport, $remoteip) = sockaddr_in($peername) or next;
+			$remoteip = inet_ntoa($remoteip) or next;
+			#
+			# We create a new client object and
+			# We see if client is allowed to connect to us
+			#
+			if (scalar(keys %{$self->{_clientip}}) && !$self->{_clientip}{$remoteip}) {
+				#
+				# Client's IP is not allowed to connect to us
+				#
+				close ($clientsock);
 				}
 			else {
-				# One of the client sockets are ready
-				$result = sysread($_, $tempdata, 4096);
-				$serverclient = $self->{_clients}->{$_};
-				if (!defined $result) {
-					# Error somewhere during reading
-					&_callback($serverclient, "disconnect");
-					$serverclient->close();
-					delete $self->{_clients}->{$_};
-					}
-				elsif ($result == 0) {
-					# Client closed connection
-					&_callback($serverclient, "disconnect");
-					$serverclient->close();
-					delete $self->{_clients}->{$_};
-					}
-				else {
-					# Client sent us some good data (not necessarily a full packet)
-					$serverclient->{_databuffer} .= $tempdata;
-					while (defined ($realdata = &_extractdata($serverclient)) ) {
-						if (!$realdata) {
-							# It's internal protocol data
-							&_parseinternaldata($serverclient);
-							}
-						else {
-							# We found something and it's real data
-							&_callback($serverclient, "data");
-							}
+				#
+				# We add it to our SELECTOR pool :
+				#
+				$self->{_selector}->add($clientsock);
+				#
+				# We create a new client object:
+				#
+				$self->{_clients}->{$clientsock} = &_new_client(
+					$self,
+					"_sock"		=>	$clientsock,
+					"_remoteport"	=>	$remoteport,
+					"_remoteip"	=>	$remoteip
+					);
+				#
+				# And we make it inherit some stuff from the server :
+				#
+				$self->{_clients}->{$clientsock}->{_serial} = ++$_SERIAL;
+				$self->{_clients}->{$clientsock}->{_donotencrypt} = $self->{_donotencrypt};
+				$self->{_clients}->{$clientsock}->{_donotcompress} = $self->{_donotcompress};
+				$self->{_clients}->{$clientsock}->{_password} = $self->{_password};
+				$self->{_clients}->{$clientsock}->{_callbacks} = $self->{_callbacks};
+				$self->{_clients}->{$clientsock}->{_welcome} = $self->{_welcome};
+				$self->{_clients}->{$clientsock}->{_selector} = $self->{_selector};
+				}
+			}
+		else {
+			#
+			# One of the CLIENT sockets are ready
+			#
+			$result = sysread($_, $tempdata, 4096);
+			$serverclient = $self->{_clients}->{$_};
+			if (!defined $result) {
+				#
+				# Error somewhere during reading from that client
+				#
+				&_callback($serverclient, "disconnect");
+				$serverclient->close();
+				delete $self->{_clients}->{$_};
+				}
+			elsif ($result == 0) {
+				#
+				# Client closed connection
+				#
+				&_callback($serverclient, "disconnect");
+				$serverclient->close();
+				delete $self->{_clients}->{$_};
+				}
+			else {
+				#
+				# Client sent us some good data (not necessarily a full packet)
+				#
+				$serverclient->{_databuffer} .= $tempdata;
+				while (defined ($realdata = &_extractdata($serverclient)) ) {
+					if (!$realdata) {
+						# It's internal protocol data
+						&_parseinternaldata($serverclient);
+						}
+					else {
+						# We found something and it's real data
+						&_callback($serverclient, "data");
 						}
 					}
 				}
 			}
-		# Now we check on all the serverclients still negotiating and help them finish negotiating
-		# or weed out the ones timing out
-		foreach (keys %{$self->{_clients}}) {
-			$serverclient = $self->{_clients}->{$_};
-			if ($serverclient->{_negotiating}) {
-				if (&_serverclient_negotiate($serverclient) ) {
-					&_callback($serverclient, "connect");
-					}
-				elsif ((time - $serverclient->{_negotiating}) > $negotiatingtimeout) {
-					$serverclient->close();
-					delete $self->{_clients}->{$_};
-					}
+		}
+	#
+	# Now we check on all the serverclients still negotiating and help them finish negotiating
+	# or weed out the ones timing out
+	#
+	foreach (keys %{$self->{_clients}}) {
+		$serverclient = $self->{_clients}->{$_};
+		if ($serverclient->{_negotiating}) {
+			if (&_serverclient_negotiate($serverclient) ) {
+				&_callback($serverclient, "connect");
+				}
+			elsif ((time - $serverclient->{_negotiating}) > $negotiatingtimeout) {
+				$serverclient->close();
+				delete $self->{_clients}->{$_};
 				}
 			}
-		# Now we re-generate the RSA keys if it's been over an hour
-		#
-		if (!$self->{_donotencrypt} && ((time-$lastglobalkeygentime) >= 3600)) {
-			if (!&_generateglobalkeypair('Crypt::RSA')) {
-				$error = "Could not generate global Crypt::RSA keypairs. $@";
-				last MLOOP;
-				}
-			$lastglobalkeygentime = time;
+		}
+	#
+	# Now we re-generate the RSA keys if it's been over an hour
+	#
+	if (!$self->{_donotencrypt} && ((time-$self->{_lastglobalkeygentime}) >= 3600)) {
+		if (!&_generateglobalkeypair('Crypt::RSA')) {
+			$@ = "Could not generate global Crypt::RSA keypairs. $@";
+			return undef;
 			}
+		$self->{_lastglobalkeygentime} = time;
 		}
-	# If we reach here the server's been stopped
-	$self->{_clients} = {};
-	$self->{_running} = 0;
-	$self->{_requeststop} = 0;
-	if ($error) {
-		$@ = $error;
-		return undef;
-		}
-	else {
-		return 1;
-		}
+	return 1;
 	}
 
 #
@@ -1690,9 +1744,9 @@ sub close() {
 		$@ = "$self->{_mode} cannot use method close()";
 		return undef;
 		}
-	if ($_SELECTOR && $_SELECTOR->exists($self->{_sock})) {
+	if ($self->{_selector} && $self->{_selector}->exists($self->{_sock})) {
 		# If the server selector reads this, let's make it not...
-		$_SELECTOR->remove($self->{_sock});
+		$self->{_selector}->remove($self->{_sock});
 		}
 	$self->{_sock}->close();
 	$self->{_sock} = undef;
