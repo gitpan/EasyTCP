@@ -1,7 +1,7 @@
 package Net::EasyTCP;
 
 #
-# $Header: /cvsroot/Net::EasyTCP/EasyTCP.pm,v 1.133 2003/07/15 01:00:57 mina Exp $
+# $Header: /cvsroot/Net::EasyTCP/EasyTCP.pm,v 1.135 2003/08/07 12:16:13 mina Exp $
 #
 
 use strict;
@@ -33,7 +33,7 @@ BEGIN {
 		#
 		# MAKE SURE WE DO NOT EVER ASSIGN THE SAME KEY TO MORE THAN ONE MODULE, EVEN OLD ONES NO LONGER IN THE LIST
 		#
-		# HIGHEST EVER USED: B
+		# HIGHEST EVER USED: E
 		#
 		[ 'B', 'Crypt::RSA',         0, 0 ],
 		[ '3', 'Crypt::CBC',         0, 0 ],
@@ -42,6 +42,9 @@ BEGIN {
 		[ '4', 'Crypt::Blowfish',    1, 1 ],
 		[ '6', 'Crypt::DES_EDE3',    1, 1 ],
 		[ '5', 'Crypt::DES',         1, 1 ],
+		[ 'C', 'Crypt::Twofish2',    1, 1 ],
+		[ 'D', 'Crypt::Twofish',     1, 1 ],
+		[ 'E', 'Crypt::TEA',         1, 1 ],
 		[ '2', 'Crypt::CipherSaber', 0, 1 ],
 	);
 	my @_misc_modules = (
@@ -128,7 +131,7 @@ require AutoLoader;
 # names by default without a very good reason. Use EXPORT_OK instead.
 # Do not simply export all your public functions/methods/constants.
 @EXPORT  = qw();
-$VERSION = '0.24';
+$VERSION = '0.25';
 
 # Preloaded methods go here.
 
@@ -375,6 +378,18 @@ sub _genkey {
 	}
 	elsif ($module eq 'Crypt::DES') {
 		$key1 = _genrandstring(8);
+		$key2 = $key1;
+	}
+	elsif ($module eq 'Crypt::Twofish2') {
+		$key1 = _genrandstring(32);
+		$key2 = $key1;
+	}
+	elsif ($module eq 'Crypt::Twofish') {
+		$key1 = _genrandstring(32);
+		$key2 = $key1;
+	}
+	elsif ($module eq 'Crypt::TEA') {
+		$key1 = _genrandstring(16);
 		$key2 = $key1;
 	}
 	elsif ($module eq 'Crypt::CipherSaber') {
@@ -2240,7 +2255,7 @@ Compression will be automatically enabled if one (or more) of: L<Compress::Zlib|
 
 As-symmetric encryption will be automatically enabled if L<Crypt::RSA|Crypt::RSA> is installed on both the client and the server.
 
-Symmetric encryption will be automatically enabled if one (or more) of: L<Crypt::Rijndael|Crypt::Rijndael>* or L<Crypt::RC6|Crypt::RC6>* or L<Crypt::Blowfish|Crypt::Blowfish>* or L<Crypt::DES_EDE3|Crypt::DES_EDE3>* or L<Crypt::DES|Crypt::DES>* or L<Crypt::CipherSaber|Crypt::CipherSaber> are installed on both the client and the server.
+Symmetric encryption will be automatically enabled if one (or more) of: L<Crypt::Rijndael|Crypt::Rijndael>* or L<Crypt::RC6|Crypt::RC6>* or L<Crypt::Blowfish|Crypt::Blowfish>* or L<Crypt::DES_EDE3|Crypt::DES_EDE3>* or L<Crypt::DES|Crypt::DES>* or L<Crypt::Twofish2|Crypt::Twofish2>* or L<Crypt::Twofish|Crypt::Twofish>* or L<Crypt::TEA|Crypt::TEA>* or L<Crypt::CipherSaber|Crypt::CipherSaber> are installed on both the client and the server.
 
 Strong randomization will be automatically enabled if L<Crypt::Random|Crypt::Random> is installed; otherwise perl's internal rand() is used to generate random keys.
 
@@ -2316,7 +2331,7 @@ mnaguib@cpan.org
 
 =head1 SEE ALSO
 
-Perl(1), L<IO::Socket>, L<IO::Select>, L<Compress::Zlib>, L<Compress::LZF>, L<Crypt::RSA>, L<Crypt::CBC>, L<Crypt::Rijndael>, L<Crypt::RC6>, L<Crypt::Blowfish>, L<Crypt::DES_EDE3>, L<Crypt::DES>, L<Crypt::CipherSaber>, L<Crypt::Random>, defined(), rand()
+Perl(1), L<IO::Socket>, L<IO::Select>, L<Compress::Zlib>, L<Compress::LZF>, L<Crypt::RSA>, L<Crypt::CBC>, L<Crypt::Rijndael>, L<Crypt::RC6>, L<Crypt::Blowfish>, L<Crypt::DES_EDE3>, L<Crypt::DES>, L<Crypt::Twofish2>, L<Crypt::Twofish>, L<Crypt::TEA>, L<Crypt::CipherSaber>, L<Crypt::Random>, defined(), rand()
 
 =head1 COPYRIGHT
 

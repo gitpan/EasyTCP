@@ -1,7 +1,12 @@
-$Header: /cvsroot/Net::EasyTCP/Changes,v 1.37 2003/07/15 01:07:11 mina Exp $
+$Header: /cvsroot/Net::EasyTCP/Changes,v 1.38 2003/08/07 12:16:13 mina Exp $
 
 
 REVISION HISTORY:
+
+
+0.25
+	- Added support for 3 new symmetric encryption modules: Crypt::Twofish2,
+	  Crypt::Twofish and Crypt::TEA
 
 
 0.24
