@@ -1,11 +1,11 @@
 package Net::EasyTCP;
 
 #
-# $Header: /cvsroot/Net::EasyTCP/EasyTCP.pm,v 1.135 2003/08/07 12:16:13 mina Exp $
+# $Header: /cvsroot/Net::EasyTCP/EasyTCP.pm,v 1.144 2004/03/17 14:14:31 mina Exp $
 #
 
 use strict;
-use vars qw($VERSION @ISA @EXPORT @EXPORT_OK $_SERIAL %_COMPRESS_AVAILABLE %_ENCRYPT_AVAILABLE %_MISC_AVAILABLE);
+use vars qw($VERSION @ISA @EXPORT @EXPORT_OK $_SERIAL %_COMPRESS_AVAILABLE %_ENCRYPT_AVAILABLE %_MISC_AVAILABLE $PACKETSIZE);
 
 use IO::Socket;
 use IO::Select;
@@ -76,7 +76,7 @@ BEGIN {
 			$version = eval("\$$_->[1]::VERSION;") || die "Failed to determine version for $_->[1]\n";
 		};
 		if (!$@) {
-			push (@{ $_COMPRESS_AVAILABLE{_order} }, $_->[0]);
+			push(@{ $_COMPRESS_AVAILABLE{_order} }, $_->[0]);
 			$_COMPRESS_AVAILABLE{ $_->[0] }{name}    = $_->[1];
 			$_COMPRESS_AVAILABLE{ $_->[0] }{version} = $version;
 		}
@@ -96,7 +96,7 @@ BEGIN {
 				$hasCBC = 1;
 			}
 			elsif (($hasCBC && $_->[2]) || !$_->[2]) {
-				push (@{ $_ENCRYPT_AVAILABLE{_order} }, $_->[0]);
+				push(@{ $_ENCRYPT_AVAILABLE{_order} }, $_->[0]);
 				$_ENCRYPT_AVAILABLE{ $_->[0] }{name}              = $_->[1];
 				$_ENCRYPT_AVAILABLE{ $_->[0] }{cbc}               = $_->[2];
 				$_ENCRYPT_AVAILABLE{ $_->[0] }{mergewithpassword} = $_->[3];
@@ -115,7 +115,7 @@ BEGIN {
 			$version = eval("\$$_->[1]::VERSION;") || die "Failed to determine version for $_->[1]\n";
 		};
 		if (!$@) {
-			push (@{ $_MISC_AVAILABLE{_order} }, $_->[0]);
+			push(@{ $_MISC_AVAILABLE{_order} }, $_->[0]);
 			$_MISC_AVAILABLE{ $_->[0] }{name}    = $_->[1];
 			$_MISC_AVAILABLE{ $_->[0] }{version} = $version;
 		}
@@ -123,17 +123,1188 @@ BEGIN {
 }
 
 require Exporter;
-require AutoLoader;
 
-@ISA = qw(Exporter AutoLoader);
+@ISA        = qw(Exporter);
+@EXPORT     = qw();
+$VERSION    = '0.26';
+$PACKETSIZE = 4096;
 
-# Items to export into callers namespace by default. Note: do not export
-# names by default without a very good reason. Use EXPORT_OK instead.
-# Do not simply export all your public functions/methods/constants.
-@EXPORT  = qw();
-$VERSION = '0.25';
+#
+# POD DOCUMENTATION:
+#
 
-# Preloaded methods go here.
+=head1 NAME
+
+Net::EasyTCP - Easily create secure, bandwidth-friendly TCP/IP clients and servers
+
+=head1 FEATURES
+
+=over 4
+
+=item *
+
+One easy module to create both clients and servers
+
+=item *
+
+Object Oriented interface
+
+=item *
+
+Event-based callbacks in server mode
+
+=item *
+
+Internal protocol to take care of all the common transport problems
+
+=item *
+
+Transparent encryption
+
+=item *
+
+Transparent compression
+
+=back
+
+=head1 SYNOPSIS
+
+=over 4
+
+=item SERVER EXAMPLE:
+
+	use Net::EasyTCP;
+
+	#
+	# Create the server object
+	#
+	$server = new Net::EasyTCP(
+		mode            =>      "server",
+		port            =>      2345,
+	)
+	|| die "ERROR CREATING SERVER: $@\n";
+
+	#
+	# Tell it about the callbacks to call
+	# on known events
+	#
+	$server->setcallback(
+		data            =>      \&gotdata,
+		connect         =>      \&connected,
+		disconnect	=>	\&disconnected,
+	)
+	|| die "ERROR SETTING CALLBACKS: $@\n";
+
+	#
+	# Start the server
+	#
+	$server->start() || die "ERROR STARTING SERVER: $@\n";
+
+	#
+	# This sub gets called when a client sends us data
+	#
+	sub gotdata {
+		my $client = shift;
+		my $serial = $client->serial();
+		my $data = $client->data();
+		print "Client $serial sent me some data, sending it right back to them again\n";
+		$client->send($data) || die "ERROR SENDING TO CLIENT: $@\n";
+		if ($data eq "QUIT") {
+			$client->close() || die "ERROR CLOSING CLIENT: $@\n";
+		}
+		elsif ($data eq "DIE") {
+			$server->stop() || die "ERROR STOPPING SERVER: $@\n";
+		}
+	}
+
+	#
+	# This sub gets called when a new client connects
+	#
+	sub connected {
+		my $client = shift;
+		my $serial = $client->serial();
+		print "Client $serial just connected\n";
+	}
+
+	#
+	# This sub gets called when an existing client disconnects
+	#
+	sub disconnected {
+		my $client = shift;
+		my $serial = $client->serial();
+		print "Client $serial just disconnected\n";
+	}
+
+=item CLIENT EXAMPLE:
+
+	use Net::EasyTCP;
+
+	#
+	# Create a new client and connect to a server
+	#
+	$client = new Net::EasyTCP(
+		mode            =>      "client",
+		host            =>      'localhost',
+		port            =>      2345,
+	)
+	|| die "ERROR CREATING CLIENT: $@\n";
+
+	#
+	# Send and receive a simple string
+	#
+	$client->send("HELLO THERE") || die "ERROR SENDING: $@\n";
+	$reply = $client->receive() || die "ERROR RECEIVING: $@\n";
+
+	#
+	# Send and receive complex objects/strings/arrays/hashes by reference
+	#
+	%hash = ("to be or" => "not to be" , "just another" => "perl hacker");
+	$client->send(\%hash) || die "ERROR SENDING: $@\n";
+	$reply = $client->receive() || die "ERROR RECEIVING: $@\n";
+	foreach (keys %{$reply}) {
+		print "Received key: $_ = $reply->{$_}\n";
+	}
+
+	#
+	# Send and receive large binary data
+	#
+	for (1..8192) {
+		for (0..255) {
+			$largedata .= chr($_);
+		}
+	}
+	$client->send($largedata) || die "ERROR SENDING: $@\n";
+	$reply = $client->receive() || die "ERROR RECEIVING: $@\n";
+
+	#
+	# Cleanly disconnect from the server
+	#
+	$client->close();
+
+=back
+
+=head1 DESCRIPTION
+
+This class allows you to easily create TCP/IP clients and servers and provides an OO interface to manage the connection(s).  This allows you to concentrate on the application rather than on the transport.
+
+You still have to engineer your high-level protocol. For example, if you're writing an SMTP client-server pair, you will have to teach your client to send "HELO" when it connects, and you will have to teach your server what to do once it receives the "HELO" command, and so forth.
+
+What you won't have to do is worry about how the command will get there, about line termination, about binary data, complex-structure serialization, encryption, compression, or about fragmented packets on the received end.  All of these will be taken care of by this class.
+
+=head1 CONSTRUCTOR
+
+=over 4
+
+=item new(%hash)
+
+Constructs and returns a new Net::EasyTCP object.  Such an object behaves in one of two modes (that needs to be supplied to new() on creation time).  You can create either a server object (which accepts connections from several clients) or a client object (which initiates a connection to a server).
+
+new() expects to be passed a hash. The following keys are accepted:
+
+=over 4
+
+=item donotcheckversion
+
+Set to 1 to force a client to continue connecting even if an encryption/compression/Storable module version mismatch is detected. (Using this is highly unrecommended, you should upgrade the module in question to the same version on both ends)
+Note that as of Net::EasyTCP version 0.20, this parameter is fairly useless since that version (and higher) do not require external modules to have the same version anymore, but instead determine compatability between different versions dynamically.  See the accompanying Changes file for more details.
+(Optional and acceptable when mode is "client")
+
+=item donotcompress
+
+Set to 1 to forcefully disable L<compression|COMPRESSION AND ENCRYPTION> even if the appropriate module(s) are found.
+(Optional)
+
+=item donotcompresswith
+
+Set to a scalar or an arrayref of compression module(s) you'd like to avoid compressing with.  For example, if you do not want to use Compress::LZF, you can do so by utilizing this option.
+(Optional)
+
+=item donotencrypt
+
+Set to 1 to forcefully disable L<encryption|COMPRESSION AND ENCRYPTION> even if the appropriate module(s) are found.
+(Optional)
+
+=item donotencryptwith
+
+Set to a scalar or an arrayref of encryption module(s) you'd like to avoid encrypting with.  For example, Crypt::RSA takes a long time to initialize keys and encrypt/decrypt, so you can avoid using it by utilizing this option.
+(Optional)
+
+=item host
+
+Must be set to the hostname/IP address to connect to.
+(Mandatory when mode is "client")
+
+=item mode
+
+Must be set to either "client" or "server" according to the type of object you want returned.
+(Mandatory)
+
+=item password
+
+Defines a password to use for the connection.  When mode is "server" this password will be required from clients before the full connection is accepted .  When mode is "client" this is the password that the server connecting to requires.
+
+Also, when encryption using a symmetric encryption module is used, this password is included as part of the secret "key" for encrypting the data.
+(Optional)
+
+=item port
+
+Must be set to the port the client connects to (if mode is "client") or to the port to listen to (if mode is "server"). If you're writing a client+server pair, they must both use the same port number.
+(Mandatory)
+
+=item timeout
+
+Set to an integer (seconds) that a client attempting to establish a TCP/IP connection to a server will timeout after.  If not supplied, the default is 30 seconds. (Optional and acceptable only when mode is "client")
+
+=item welcome
+
+If someone uses an interactive telnet program to telnet to the server, they will see this welcome message.
+(Optional and acceptable only when mode is "server")
+
+=back
+
+=back
+
+=head1 METHODS
+
+B<[C] = Available to objects created as mode "client">
+
+B<[H] = Available to "hybrid" client objects, as in "the server-side client objects created when a new client connects". These are the objects passed to your server's callbacks.  Such hybrid clients behave almost exactly like a normal "client" object you create yourself, except for a slight difference in the available methods to retrieve data.>
+
+B<[S] = Available to objects created as mode "server">
+
+=over 4
+
+=item addclientip(@array)
+
+B<[S]> Adds an IP address (or IP addresses) to the list of allowed clients to a server.  If this is done, the server will not accept connections from clients not in it's list.
+
+The compliment of this function is deleteclientip() .
+
+=item callback(%hash)
+
+See setcallback()
+
+=item clients()
+
+B<[S]> Returns all the clients currently connected to the server.  If called in array context will return an array of client objects.  If called in scalar context will return the number of clients connected.
+
+=item close()
+
+B<[C][H]> Instructs a client object to close it's connection with a server.
+
+=item compression()
+
+B<[C][H]> Returns the name of the module used as the compression module for this connection, undef if no compression occurs.
+
+=item data()
+
+B<[H]> Retrieves the previously-retrieved data associated with a hybrid client object.  This method is typically used from inside the callback sub associated with the "data" event, since the callback sub is passed nothing more than a client object.
+
+=item deleteclientip(@array)
+
+B<[S]> Deletes an IP address (or IP addresses) from the list of allowed clients to a server.  The IP address (or IP addresses) supplied will no longer be able to connect to the server.
+
+The compliment of this function is addclientip() .
+
+=item disconnect()
+
+See close()
+
+=item do_one_loop()
+
+B<[S]> Instructs a server object to "do one loop" and return ASAP.  This method needs to be called VERY frequently for a server object to function as expected (either through some sort of loop inside your program if you need to do other things beside serve clients, or via the start() method if your entire program is dedicated to serving clients).  Each one loop will help the server do it's job, including accepting new clients, receiving data from them, firing off the appropriate callbacks etc.
+
+=item encryption()
+
+B<[C][H]> Returns the name of the module used as the encryption module for this connection, undef if no encryption occurs.
+
+=item mode()
+
+B<[C][H][S]> Identifies the mode of the object.  Returns either "client" or "server"
+
+=item receive($timeout)
+
+B<[C]> Receives data sent to the client by a server and returns it.  It will block until data is received or until a certain timeout of inactivity (no data transferring) has occurred.
+
+It accepts an optional parameter, a timeout value in seconds.  If none is supplied it will default to 300.
+
+=item remoteip()
+
+B<[C][H]> Returns the IP address of the host on the other end of the connection.
+
+=item remoteport()
+
+B<[C][H]> Returns the port of the host on the other end of the connection.
+
+=item running()
+
+B<[S]> Returns true if the server is running (started), false if it is not.
+
+=item send($data)
+
+B<[C][H]> Sends data to a server.  It can be used on client objects you create with the new() constructor, clients objects returned by the clients() method, or with client objects passed to your callback subs by a running server.
+
+It accepts one parameter, and that is the data to send.  The data can be a simple scalar or a reference to something more complex.
+
+=item serial()
+
+B<[H]> Retrieves the serial number of a client object,  This is a simple integer that allows your callback subs to easily differentiate between different clients.
+
+=item setcallback(%hash)
+
+B<[S]> Tells the server which subroutines to call when specific events happen. For example when a client sends the server data, the server calls the "data" callback sub.
+
+setcallback() expects to be passed a hash. Each key in the hash is the callback type identifier, and the value is a reference to a sub to call once that callback type event occurs.
+
+Valid keys in that hash are:
+
+=over 4
+
+=item connect
+
+Called when a new client connects to the server
+
+=item data
+
+Called when an existing client sends data to the server
+
+=item disconnect
+
+Called when an existing client disconnects
+
+=back
+
+Whenever a callback sub is called, it is passed a single parameter, a CLIENT OBJECT. The callback code may then use any of the methods available to client objects to do whatever it wants to do (Read data sent from the client, reply to the client, close the client connection etc...)
+
+
+=item socket()
+
+B<[C][H]> Returns the handle of the socket (actually an L<IO::Socket|IO::Socket> object) associated with the supplied object.  This is useful if you're interested in using L<IO::Select|IO::Select> or select() and want to add a client object's socket handle to the select list.
+
+Note that eventhough there's nothing stopping you from reading and writing directly to the socket handle you retrieve via this method, you should never do this since doing so would definately corrupt the internal protocol and may render your connection useless.  Instead you should use the send() and receive() methods.
+
+=item start(subref)
+
+B<[S]> Starts a server and does NOT return until the server is stopped via the stop() method.  This method is a simple while() wrapper around the do_one_loop() method and should be used if your entire program is dedicated to being a server, and does not need to do anything else concurrently.
+
+If you need to concurrently do other things when the server is running, then you can supply to start() the optional reference to a subroutine (very similar to the callback() method).  If that is supplied, it will be called every loop.  This is very similar to the callback subs, except that the called sub will be passed the server object that the start() method was called on (unlike normal client callbacks which are passed a client object).  The other alternative to performing other tasks concurrently is to not use the start() method at all and directly call do_one_loop() repeatedly in your own program.
+
+=item stop()
+
+B<[S]> Instructs a running server to stop and returns immediately (does not wait for the server to actually stop, which may be a few seconds later).  To check if the server is still running or not use the running() method.
+
+=back
+
+=head1 COMPRESSION AND ENCRYPTION
+
+Clients and servers written using this class will automatically compress and/or encrypt the transferred data if the appropriate modules are found.
+
+Compression will be automatically enabled if one (or more) of: L<Compress::Zlib|Compress::Zlib> or L<Compress::LZF|Compress::LZF> are installed on both the client and the server.
+
+As-symmetric encryption will be automatically enabled if L<Crypt::RSA|Crypt::RSA> is installed on both the client and the server.
+
+Symmetric encryption will be automatically enabled if one (or more) of: L<Crypt::Rijndael|Crypt::Rijndael>* or L<Crypt::RC6|Crypt::RC6>* or L<Crypt::Blowfish|Crypt::Blowfish>* or L<Crypt::DES_EDE3|Crypt::DES_EDE3>* or L<Crypt::DES|Crypt::DES>* or L<Crypt::Twofish2|Crypt::Twofish2>* or L<Crypt::Twofish|Crypt::Twofish>* or L<Crypt::TEA|Crypt::TEA>* or L<Crypt::CipherSaber|Crypt::CipherSaber> are installed on both the client and the server.
+
+Strong randomization will be automatically enabled if L<Crypt::Random|Crypt::Random> is installed; otherwise perl's internal rand() is used to generate random keys.
+
+Preference to the compression/encryption method used is determind by availablity checking following the order in which they are presented in the above lists.
+
+Note that during the negotiation upon connection, servers and clients written using Net::EasyTCP version lower than 0.20 communicated the version of the selected encryption/compression modules.  If a version mismatch is found, the client reported a connection failure stating the reason (module version mismatch).  This behavior was necessary since it was observed that different versions of the same module could produce incompatible output.  If this is encountered, it is strongly recommended you upgrade the module in question to the same version on both ends, or more preferrably, Net::EasyTCP on both ends to the latest version, at a minimum 0.20.  However, if you wish to forcefully connect overlooking a version mismatch (risking instability/random problems/data corruption) you may supply the "donotcheckversion" key to the new() constructor of the client object.  This is no longer a requirement of Net::EasyTCP version 0.20 or higher since these newer versions have the ability to use different-version modules as long as their data was compatible, which was automatically determined at negotiation time.
+
+To find out which module(s) have been negotiated for use you can use the compression() and encryption() methods.
+
+* Note that for this class's purposes, L<Crypt::CBC|Crypt::CBC> is a requirement to use any of the encryption modules with a * next to it's name in the above list.  So eventhough you may have these modules installed on both the client and the server, they will not be used unless L<Crypt::CBC|Crypt::CBC> is also installed on both ends.
+
+* Note that the nature of symmetric cryptography dictates sharing the secret keys somehow.  It is therefore highly recommend to use an As-symmetric cryptography module (such as Crypt::RSA) for serious encryption needs; as a determined hacker might find it trivial to decrypt your data with other symmetric modules.
+
+* Note that if symmetric cryptography is used, then it is highly recommended to also use the "password" feature on your servers and clients; since then the "password" will, aside from authentication,  be also used in the "secret key" to encrypt the data.  Without a password, the secret key has to be transmitted to the other side during the handshake, significantly lowering the overall security of the data.
+
+If the above modules are installed but you want to forcefully disable compression or encryption, supply the "donotcompress" and/or "donotencrypt" keys to the new() constructor.  If you would like to forcefully disable the use of only some modules, supply the "donotcompresswith" and/or "donotencryptwith" keys to the new() constructor.  This could be used for example to disable the use of Crypt::RSA if you cannot afford the time it takes to generate it's keypairs etc...
+
+=head1 RETURN VALUES AND ERRORS
+
+The constructor and all methods return something that evaluates to true when successful, and to false when not successful.
+
+There are a couple of exceptions to the above rule and they are the following methods:
+
+=over 4
+
+=item *
+
+clients()
+
+=item *
+
+data()
+
+=back
+
+The above methods may return something that evaluates to false (such as an empty string, an empty array, or the string "0") eventhough there was no error.  In that case check if the returned value is defined or not, using the defined() Perl function.
+
+If not successful, the variable $@ will contain a description of the error that occurred.
+
+=head1 NOTES
+
+=over 4
+
+=item Incompatability with Net::EasyTCP version 0.01
+
+Version 0.02 and later have had their internal protocol modified to a fairly large degree.  This has made compatability with version 0.01 impossible.  If you're going to use version 0.02 or later (highly recommended), then you will need to make sure that none of the clients/servers are still using version 0.01.  It is highly recommended to use the same version of this module on both sides.
+
+=item Internal Protocol
+
+This class implements a miniature protocol when it sends and receives data between it's clients and servers.  This means that a server created using this class cannot properly communicate with a normal client of any protocol (pop3/smtp/etc..) unless that client was also written using this class.  It also means that a client written with this class will not properly communicate with a different server (telnet/smtp/pop3 server for example, unless that server is implemented using this class also).  This limitation will not change in future releases due to the plethora of advantages the internal protocol gives us.
+
+In other words, if you write a server using this class, write the client using this class also, and vice versa.
+
+=item Delays
+
+This class does not use the fork() method whatsoever.  This means that all it's input/output and multi-socket handling is done via select().
+
+This leads to the following limitation:  When a server calls one of your callback subs, it waits for it to return and therefore cannot do anything else.  If your callback sub takes 5 minutes to return, then the server will not be able to do anything for 5 minutes, such as acknowledge new clients, or process input from other clients.
+
+In other words, make the code in your callbacks' subs' minimal and strive to make it return as fast as possible.
+
+=item Deadlocks
+
+As with any client-server scenario, make sure you engineer how they're going to talk to each other, and the order they're going to talk to each other in, quite carefully.  If both ends of the connection are waiting for the other end to say something, you've got a deadlock.
+
+=back
+
+=head1 AUTHOR
+
+Mina Naguib
+http://www.topfx.com
+mnaguib@cpan.org
+
+=head1 SEE ALSO
+
+Perl(1), L<IO::Socket>, L<IO::Select>, L<Compress::Zlib>, L<Compress::LZF>, L<Crypt::RSA>, L<Crypt::CBC>, L<Crypt::Rijndael>, L<Crypt::RC6>, L<Crypt::Blowfish>, L<Crypt::DES_EDE3>, L<Crypt::DES>, L<Crypt::Twofish2>, L<Crypt::Twofish>, L<Crypt::TEA>, L<Crypt::CipherSaber>, L<Crypt::Random>, defined(), rand()
+
+=head1 COPYRIGHT
+
+Copyright (C) 2001-2003 Mina Naguib.  All rights reserved.  Use is subject to the Perl license.
+
+=cut
+
+#
+# The main constructor. This calls either _new_client or _new_server depending on the supplied mode
+#
+sub new {
+	my $class = shift;
+	my %para  = @_;
+
+	# Let's lowercase all keys in %para
+	foreach (keys %para) {
+		if ($_ ne lc($_)) {
+			$para{ lc($_) } = $para{$_};
+			delete $para{$_};
+		}
+	}
+	if ($para{mode} =~ /^c/i) {
+		return _new_client($class, %para);
+	}
+	elsif ($para{mode} =~ /^s/i) {
+		return _new_server($class, %para);
+	}
+	else {
+		$@ = "Supplied mode '$para{mode}' unacceptable. Must be either 'client' or 'server'";
+		return undef;
+	}
+}
+
+#
+# Make callback() a synonim to setcallback()
+#
+
+sub callback {
+	return setcallback(@_);
+}
+
+#
+# This method adds an ip address(es) to the list of valid IPs a server can accept connections
+# from.
+#
+sub addclientip {
+	my $self = shift;
+	my @ips  = @_;
+	if ($self->{_mode} ne "server") {
+		$@ = "$self->{_mode} cannot use method addclientip()";
+		return undef;
+	}
+	foreach (@ips) {
+		$self->{_clientip}{$_} = 1;
+	}
+	return 1;
+}
+
+#
+# This method does the opposite of addclient(), it removes an ip address(es) from the list
+# of valid IPs a server can accept connections from.
+#
+sub deleteclientip {
+	my $self = shift;
+	my @ips  = @_;
+	if ($self->{_mode} ne "server") {
+		$@ = "$self->{_mode} cannot use method deleteclientip()";
+		return undef;
+	}
+	foreach (@ips) {
+		delete $self->{_clientip}{$_};
+	}
+	return 1;
+}
+
+#
+#
+# This method modifies the _callback_XYZ in a server object. These are the routines
+# the server calls when an event (data, connect, disconnect) happens
+#
+sub setcallback {
+	my $self = shift;
+	my %para = @_;
+	if ($self->{_mode} ne "server") {
+		$@ = "$self->{_mode} cannot use method setcallback()";
+		return undef;
+	}
+	foreach (keys %para) {
+		if (ref($para{$_}) ne "CODE") {
+			$@ = "Callback $_ $para{$_} does not exist";
+			return 0;
+		}
+		$self->{_callbacks}->{$_} = $para{$_};
+	}
+	return 1;
+}
+
+#
+# This method starts the server and does not return until stop() is called.
+# All other behavior is delegated to do_one_loop()
+#
+sub start {
+	my $self     = shift;
+	my $callback = shift;
+	if ($self->{_mode} ne "server") {
+		$@ = "$self->{_mode} cannot use method start()";
+		return undef;
+	}
+	$self->{_running}     = 1;
+	$self->{_requeststop} = 0;
+
+	#
+	# Let's loop until we're stopped:
+	#
+	while (!$self->{_requeststop}) {
+		$self->do_one_loop() || return undef;
+		if ($callback && ref($callback) eq "CODE") {
+			&{$callback}($self);
+		}
+	}
+
+	#
+	# If we reach here the server's been stopped
+	#
+	$self->{_running}     = 0;
+	$self->{_requeststop} = 0;
+	return 1;
+}
+
+#
+# This method does "one loop" of server work and returns ASAP
+# It should be called very frequently, either through a while() loop in the program
+# or through the start() method
+#
+# It accepts new clients, accepts data from them, and fires off any callback events as necessary
+#
+sub do_one_loop {
+	my $self = shift;
+	my @ready;
+	my $clientsock;
+	my $tempdata;
+	my $serverclient;
+	my $realdata;
+	my $result;
+	my $negotiatingtimeout = 45;
+	my $peername;
+	my $remoteport;
+	my $remoteip;
+
+	if ($self->{_mode} ne "server") {
+		$@ = "$self->{_mode} cannot use method do_one_loop()";
+		return undef;
+	}
+	$self->{_lastglobalkeygentime} ||= time;
+	@ready = $self->{_selector}->can_read(0.01);
+	foreach (@ready) {
+		if ($_ == $self->{_sock}) {
+
+			#
+			# The SERVER SOCKET is ready for accepting a new client
+			#
+			$clientsock = $self->{_sock}->accept();
+			if (!$clientsock) {
+				$@ = "Error while accepting new connection: $!";
+				return undef;
+			}
+
+			#
+			# We get remote IP and port, we'll need them to see if client is allowed or not
+			#
+			$peername = getpeername($clientsock) or next;
+			($remoteport, $remoteip) = sockaddr_in($peername) or next;
+			$remoteip = inet_ntoa($remoteip) or next;
+
+			#
+			# We create a new client object and
+			# We see if client is allowed to connect to us
+			#
+			if (scalar(keys %{ $self->{_clientip} }) && !$self->{_clientip}{$remoteip}) {
+
+				#
+				# Client's IP is not allowed to connect to us
+				#
+				close($clientsock);
+			}
+			else {
+
+				#
+				# We add it to our SELECTOR pool :
+				#
+				$self->{_selector}->add($clientsock);
+
+				#
+				# We create a new client object:
+				#
+				$self->{_clients}->{$clientsock} = _new_client(
+					$self,
+					"_sock"       => $clientsock,
+					"_remoteport" => $remoteport,
+					"_remoteip"   => $remoteip
+				);
+
+				#
+				# We initialize some client variables:
+				#
+				$self->{_clients}->{$clientsock}->{_serial}                 = ++$_SERIAL;
+				$self->{_clients}->{$clientsock}->{_compatabilityscalar}    = _genrandstring(129);
+				$self->{_clients}->{$clientsock}->{_compatabilityreference} = _gencompatabilityreference($self->{_clients}->{$clientsock}->{_compatabilityscalar});
+
+				#
+				# And we make it inherit some stuff from the server :
+				#
+				$self->{_clients}->{$clientsock}->{_donotencrypt}      = $self->{_donotencrypt};
+				$self->{_clients}->{$clientsock}->{_donotencryptwith}  = $self->{_donotencryptwith};
+				$self->{_clients}->{$clientsock}->{_donotcompress}     = $self->{_donotcompress};
+				$self->{_clients}->{$clientsock}->{_donotcompresswith} = $self->{_donotcompresswith};
+				$self->{_clients}->{$clientsock}->{_password}          = $self->{_password};
+				$self->{_clients}->{$clientsock}->{_callbacks}         = $self->{_callbacks};
+				$self->{_clients}->{$clientsock}->{_welcome}           = $self->{_welcome};
+				$self->{_clients}->{$clientsock}->{_selector}          = $self->{_selector};
+			}
+		}
+		else {
+
+			#
+			# One of the CLIENT sockets are ready
+			#
+			$result = sysread($_, $tempdata, $PACKETSIZE);
+			$serverclient = $self->{_clients}->{$_};
+			if (!defined $result) {
+
+				#
+				# Error somewhere during reading from that client
+				#
+				_callback($serverclient, "disconnect");
+				$serverclient->close();
+				delete $self->{_clients}->{$_};
+			}
+			elsif ($result == 0) {
+
+				#
+				# Client closed connection
+				#
+				_callback($serverclient, "disconnect");
+				$serverclient->close();
+				delete $self->{_clients}->{$_};
+			}
+			else {
+
+				#
+				# Client sent us some good data (not necessarily a full packet)
+				#
+				$serverclient->{_databuffer} .= $tempdata;
+
+				#
+				# Extract as many data buckets as possible out of the buffer
+				#
+				_extractdata($serverclient);
+
+				#
+				# Process all this client's data buckets
+				#
+				foreach (@{ $serverclient->{_databucket} }) {
+					if ($_->{realdata}) {
+
+						#
+						# This bucket is normal data
+						#
+						_callback($serverclient, "data");
+					}
+					else {
+
+						#
+						# This bucket is internal data
+						#
+						_parseinternaldata($serverclient);
+					}
+				}
+			}
+		}
+	}
+
+	#
+	# Now we check on all the serverclients still negotiating and help them finish negotiating
+	# or weed out the ones timing out
+	#
+	foreach (keys %{ $self->{_clients} }) {
+		$serverclient = $self->{_clients}->{$_};
+		if ($serverclient->{_negotiating}) {
+			if (_serverclient_negotiate($serverclient)) {
+				_callback($serverclient, "connect");
+			}
+			elsif ((time - $serverclient->{_negotiating}) > $negotiatingtimeout) {
+				$serverclient->close();
+				delete $self->{_clients}->{$_};
+			}
+		}
+	}
+
+	#
+	# Now we re-generate the RSA keys if it's been over an hour
+	#
+	if (!$self->{_donotencrypt} && !$self->{_donotencryptwith}{"B"} && ((time - $self->{_lastglobalkeygentime}) >= 3600)) {
+		if (!_generateglobalkeypair('Crypt::RSA')) {
+			$@ = "Could not generate global Crypt::RSA keypairs. $@";
+			return undef;
+		}
+		$self->{_lastglobalkeygentime} = time;
+	}
+	return 1;
+}
+
+#
+# This method stops the server and makes it return.
+# Note: It doesn't stop the server immediately, it sets a flag
+# and the flag should in a few seconds cause the infinite loop in start() method to stop
+#
+sub stop {
+	my $self = shift;
+	if ($self->{_mode} ne "server") {
+		$@ = "$self->{_mode} cannot call method stop()";
+		return undef;
+	}
+	$self->{_requeststop} = 1;
+	return 1;
+}
+
+#
+# This method sends data to the socket associated with the object
+#
+sub send {
+	my $self = shift;
+	my $data = shift;
+	if ($self->{_mode} ne "client" && $self->{_mode} ne "serverclient") {
+		$@ = "$self->{_mode} cannot use method send()";
+		return undef;
+	}
+	return _send($self, $data);
+}
+
+#
+# This method returns the serial number associated with the object
+#
+sub serial {
+	my $self = shift;
+	if (!$self->{_serial}) {
+		$self->{_serial} = ++$_SERIAL;
+	}
+	return $self->{_serial};
+}
+
+#
+# Takes nothing, returns the oldest entry from the data bucket for a client/serverclient
+# In array context returns data and realdata flag, otherwise just data
+# (typically the code in the callback assigned to callback_data would access this method)
+#
+sub data {
+	my $self = shift;
+	my $data;
+	if ($self->{_mode} ne "client" && $self->{_mode} ne "serverclient") {
+		$@ = "$self->{_mode} cannot use method data()";
+		return undef;
+	}
+
+	$data = shift(@{ $self->{_databucket} });
+
+	return wantarray ? ($data->{data}, $data->{realdata}) : $data->{data};
+}
+
+#
+# This method reads data from the socket associated with the object and returns it
+# Accepts an optional timeout as a first parameter, otherwise defaults to timeout
+# Returns the data if successful, undef if not
+#
+sub receive {
+	my $self               = shift;
+	my $timeout            = shift || 0;
+	my $returninternaldata = shift || 0;
+	my $temp;
+	my $realdata;
+	my $result;
+	my $lastactivity = time;
+	my $selector;
+	my @ready;
+	my $fatalerror;
+
+	if ($self->{_mode} ne "client" && $self->{_mode} ne "serverclient") {
+		$@ = "$self->{_mode} cannot use method receive()";
+		return undef;
+	}
+
+	$selector = new IO::Select;
+	$selector->add($self->{_sock});
+
+	#
+	# Let's try to read from the socket
+	#
+	while ($timeout ? ((time - $lastactivity) < $timeout) : 1) {
+		@ready = $selector->can_read($timeout);
+		if (!@ready) {
+
+			#
+			# Socket is not ready for reading
+			#
+			if (!$!) {
+
+				#
+				# Because of timeout
+				#
+				if (!$timeout) {
+
+					#
+					# We're doing an initial reading without blocking
+					#
+					last;
+				}
+				else {
+
+					#
+					# We're blocking - let the while look take care of timeout
+					#
+					next;
+				}
+			}
+			elsif ($! =~ /interrupt/i) {
+
+				#
+				# Because of select() interrupted - ignore that
+				#
+				next;
+			}
+			else {
+
+				#
+				# Because of some unknown error
+				#
+				last;
+			}
+		}
+		else {
+
+			#
+			# Socket is ready for reading
+			#
+			$result = sysread($self->{_sock}, $temp, $PACKETSIZE);
+			if (!defined $result) {
+
+				#
+				# Error reading from socket
+				#
+				$fatalerror = "Failed to read from socket: $!";
+				if (!$timeout) {
+
+					#
+					# However we won't crap out right away, as we're doing a cursory, no-timeout read
+					#
+					last;
+				}
+				else {
+					$@ = $fatalerror;
+					return undef;
+				}
+			}
+			elsif ($result == 0) {
+
+				#
+				# Socket closed while reading
+				#
+				$fatalerror = "Socket closed when attempted reading";
+				if (!$timeout) {
+
+					# However we won't crap out right away, as we're doing a cursory, no-timeout read
+					last;
+				}
+				else {
+					$@ = $fatalerror;
+					return undef;
+				}
+			}
+			else {
+
+				#
+				# Read good data - add it to the databuffer
+				#
+				$self->{_databuffer} .= $temp;
+				$lastactivity = time;
+
+				if ($timeout && $result != $PACKETSIZE && _extractdata($self)) {
+
+					#
+					# We're doing blocking reads, we extracted something into the bucket, and there's probably nothing else at the end of the socket
+					# No point looping to block again
+					#
+					last;
+				}
+			}
+		}
+	}
+
+	#
+	# Now there's nothing waiting to be received
+	# Try to extract all possible data buckets out of the data buffer
+	#
+	_extractdata($self);
+
+	#
+	# Now the databuffer has no full packets.  If there's any data to be returned it's in the data buckets
+	#
+	while ((($result, $realdata) = $self->data()) && defined $result) {
+
+		#
+		# We got something from the bucket
+		#
+		if ($realdata) {
+
+			#
+			# And it's real data - return it
+			#
+			return $result;
+		}
+		else {
+
+			#
+			# It's internal data
+			#
+			if ($returninternaldata) {
+
+				#
+				# But we've been asked to return it
+				#
+				return $result;
+			}
+			else {
+
+				#
+				# Don't know what to do with the internal data
+				#
+				_parseinternaldata($self, $result);
+			}
+		}
+	}
+	if (defined($result = $self->data())) {
+
+		#
+		# We have good data to return
+		#
+		return $result;
+	}
+
+	#
+	# If we've reached here we have no data to return
+	#
+	if (!$timeout) {
+
+		#
+		# We were doing a quick no-block read
+		#
+		if ($fatalerror) {
+
+			#
+			# And we have a fatal error - don't attempt a blocking read
+			#
+			$@ = $fatalerror;
+			return undef;
+		}
+		else {
+
+			#
+			# Attempt a blocking read
+			#
+			return $self->receive(300);
+		}
+	}
+	else {
+
+		#
+		# We did a blocking read
+		#
+		$@ = "Timed out waiting to receive data";
+		return undef;
+	}
+}
+
+#
+# This method is a synonym for close()
+#
+sub disconnect {
+	return close(@_);
+}
+
+#
+# This method closes the socket associated with the object
+#
+sub close {
+	my $self = shift;
+	if ($self->{_mode} ne "client" && $self->{_mode} ne "serverclient") {
+		$@ = "$self->{_mode} cannot use method close()";
+		return undef;
+	}
+	if ($self->{_selector} && $self->{_selector}->exists($self->{_sock})) {
+
+		# If the server selector reads this, let's make it not...
+		$self->{_selector}->remove($self->{_sock});
+	}
+	$self->{_sock}->close() if defined $self->{_sock};
+	$self->{_sock}       = undef;
+	$self->{_databucket} = [];
+	$self->{_databuffer} = undef;
+	return 1;
+}
+
+#
+# This method returns true or false, depending on if the server is running or not
+#
+sub running {
+	my $self = shift;
+	if ($self->{_mode} ne "server") {
+		$@ = "$self->{_mode} cannot use method running()";
+		return undef;
+	}
+	return $self->{_running};
+}
+
+#
+# This replies saying what type of object it's passed
+#
+sub mode {
+	my $self = shift;
+	my $mode = ($self->{_mode} eq "server") ? "server" : "client";
+	return $mode;
+}
+
+#
+# This method replies saying what type of encryption is used, undef if none
+#
+sub encryption {
+	my $self      = shift;
+	my $modulekey = $self->{_encrypt};
+	if ($self->{_donotencrypt} || !$modulekey) {
+		return undef;
+	}
+	return $_ENCRYPT_AVAILABLE{$modulekey}{name} || "Unknown module name for modulekey [$modulekey]";
+}
+
+#
+# This method replies saying what type of compression is used, undef if none
+#
+sub compression {
+	my $self      = shift;
+	my $modulekey = $self->{_compress};
+	if ($self->{_donotcompress} || !$modulekey) {
+		return undef;
+	}
+	return $_COMPRESS_AVAILABLE{$modulekey}{name} || "Unknown module name for modulekey [$modulekey]";
+}
+
+#
+# This returns the IO::Socket object associated with a connection
+#
+sub socket {
+	my $self = shift;
+	if ($self->{_mode} ne "client" && $self->{_mode} ne "serverclient") {
+		$@ = "$self->{_mode} cannot use method socket()";
+		return undef;
+	}
+	return ($self->{_sock} || undef);
+}
+
+#
+# This returns an array of all the clients connected to a server in array context
+# or the number of clients in scalar context
+# or undef if there are no clients or error
+#
+sub clients {
+	my $self = shift;
+	my @clients;
+	if ($self->{_mode} ne "server") {
+		$@ = "$self->{_mode} cannot use method clients()";
+		return undef;
+	}
+	foreach (values %{ $self->{_clients} }) {
+		if (!$_->{_negotiating}) {
+			push(@clients, $_);
+		}
+	}
+	if (@clients) {
+		return wantarray ? @clients : scalar @clients;
+	}
+	else {
+		return undef;
+	}
+}
+
+#
+# This takes a client object and returns the IP address of the remote connection
+#
+sub remoteip {
+	my $self = shift;
+	my $temp;
+	if ($self->{_mode} ne "client" && $self->{_mode} ne "serverclient") {
+		$@ = "$self->{_mode} cannot use method remoteip()";
+		return undef;
+	}
+	return $self->{_remoteip};
+}
+
+#
+# This takes a client object and returns the PORT of the remote connection
+#
+sub remoteport {
+	my $self = shift;
+	my $temp;
+	if ($self->{_mode} ne "client" && $self->{_mode} ne "serverclient") {
+		$@ = "$self->{_mode} cannot use method remoteport()";
+		return undef;
+	}
+	return $self->{_remoteport};
+}
+
+###########################################################
+###########################################################
+###########################################################
+#
+# The following are private functions (not object methods)
+#
 
 #
 # This takes 2 items (references to simple structures, or simple scalars)
@@ -321,7 +1492,7 @@ sub _gencompatabilityreference {
 # If "forcompat" is supplied, you're guaranteed to receive a new key that wasn't given out in the past to
 # non-compat requests. It may be a repeat of a previous "forcompat" pair. However, the strength of that key
 # could be possibly reduced.  Such keys are safe to reveal the private portion of publicly, as during the
-# compatability negotiation phase, however such keys must NEVER be used to encrypt any real daya, as they
+# compatability negotiation phase, however such keys must NEVER be used to encrypt any real data, as they
 # are no longer secret.
 #
 sub _genkey {
@@ -622,8 +1793,7 @@ sub _decrypt {
 	#
 	if ($module eq 'Crypt::RSA') {
 		eval {
-			if (!ref($privatekey))
-			{
+			if (!ref($privatekey)) {
 				if ($privatekey =~ /bless/) {
 
 					# We need to deserialize the private key with Crypt::RSA::Key::Private's undocumented deserialize function
@@ -746,8 +1916,8 @@ sub _client_negotiate {
 		if (!defined $reply) {
 			last;
 		}
-		@P       = split (/\x00/, $reply);
-		$command = shift (@P);
+		@P       = split(/\x00/, $reply);
+		$command = shift(@P);
 		$evl     = undef;
 		$data    = undef;
 		if (!$command) {
@@ -1116,7 +2286,7 @@ sub _serverclient_negotiate {
 		return 1;
 	}
 
-	$reply = $client->data(1);
+	$reply = $client->data();
 
 	# Let's avoid some strict claimings
 	if (!defined $reply) { $reply = "" }
@@ -1127,8 +2297,8 @@ sub _serverclient_negotiate {
 		#
 		# We're parsing a reply the other end sent us
 		#
-		@P = split (/\x00/, $reply);
-		$command = shift (@P);
+		@P = split(/\x00/, $reply);
+		$command = shift(@P);
 		if (!$command) {
 			$@ = "Error negotiating. No command received from client : $@";
 			return undef;
@@ -1143,13 +2313,13 @@ sub _serverclient_negotiate {
 			if ($client->{_encrypt}) {
 				$version = $_ENCRYPT_AVAILABLE{ $P[0] }{version};
 				if ($version ne $P[1] && !$client->{_negotiatedencryptcompatability}) {
-					unshift (@{ $client->{_negotiating_commands} }, "EVF\x00$version");
+					unshift(@{ $client->{_negotiating_commands} }, "EVF\x00$version");
 				}
 				($client->{_localpublickey}, $client->{_localprivatekey}) = _genkey($client->{_encrypt}) or return undef;
 			}
 			$temp = "EK\x00";
 			$temp .= _munge($client, $client->{_localpublickey});
-			unshift (@{ $client->{_negotiating_commands} }, $temp);
+			unshift(@{ $client->{_negotiating_commands} }, $temp);
 		}
 		elsif ($command eq "EM") {
 
@@ -1186,7 +2356,7 @@ sub _serverclient_negotiate {
 					# Since this is the second-reply to my EM, I know that the client can also decrypt using this module
 					# So we use it !
 					#
-					unshift (@{ $client->{_negotiating_commands} }, "EU\x00$P[0]");
+					unshift(@{ $client->{_negotiating_commands} }, "EU\x00$P[0]");
 
 					#
 					# Yank out any future EMs we were going to send the client since they're weaker
@@ -1218,7 +2388,7 @@ sub _serverclient_negotiate {
 			}
 			else {
 				$client->{_authenticated} = 0;
-				unshift (@{ $client->{_negotiating_commands} }, "PF");
+				unshift(@{ $client->{_negotiating_commands} }, "PF");
 			}
 		}
 		elsif ($command eq "COS") {
@@ -1227,7 +2397,7 @@ sub _serverclient_negotiate {
 			# Compatability scalar
 			#
 			if ($client->{_compatabilityscalar} ne _asc2bin($P[0])) {
-				unshift (@{ $client->{_negotiating_commands} }, "COF\x00Initial scalar exchange");
+				unshift(@{ $client->{_negotiating_commands} }, "COF\x00Initial scalar exchange");
 			}
 		}
 		elsif ($command eq "VE") {
@@ -1250,10 +2420,10 @@ sub _serverclient_negotiate {
 				#
 				$temp = thaw(_asc2bin($P[1]));
 				if (!$temp) {
-					unshift (@{ $client->{_negotiating_commands} }, "COF\x00Thawing compatability reference with the Storable module");
+					unshift(@{ $client->{_negotiating_commands} }, "COF\x00Thawing compatability reference with the Storable module");
 				}
 				if (!_comparereferences($temp, $client->{_compatabilityreference})) {
-					unshift (@{ $client->{_negotiating_commands} }, "COF\x00Comparing compatability reference with the Storable module");
+					unshift(@{ $client->{_negotiating_commands} }, "COF\x00Comparing compatability reference with the Storable module");
 				}
 			}
 			elsif ($P[0] ne $Storable::VERSION) {
@@ -1261,7 +2431,7 @@ sub _serverclient_negotiate {
 				#
 				# Old method
 				#
-				unshift (@{ $client->{_negotiating_commands} }, "SVF\x00" . $Storable::VERSION);
+				unshift(@{ $client->{_negotiating_commands} }, "SVF\x00" . $Storable::VERSION);
 			}
 		}
 		elsif ($command eq "CM") {
@@ -1287,7 +2457,7 @@ sub _serverclient_negotiate {
 					# Since this is the second-reply to my CM, I know that the client can also decrypt using this module
 					# So we use it !
 					#
-					unshift (@{ $client->{_negotiating_commands} }, "CU\x00$P[0]");
+					unshift(@{ $client->{_negotiating_commands} }, "CU\x00$P[0]");
 
 					#
 					# Yank out any future CMs we were going to send the client since they're weaker
@@ -1317,7 +2487,7 @@ sub _serverclient_negotiate {
 			if ($client->{_compress}) {
 				$version = $_COMPRESS_AVAILABLE{ $P[0] }{version};
 				if ($version ne $P[1] && !$client->{_negotiatedcompresscompatability}) {
-					unshift (@{ $client->{_negotiating_commands} }, "CVF\x00$version");
+					unshift(@{ $client->{_negotiating_commands} }, "CVF\x00$version");
 				}
 			}
 		}
@@ -1386,13 +2556,13 @@ sub _serverclient_negotiate_sendnext {
 			$data .= "::\r\n";
 		}
 		$data .= "-----END CLEARTEXT WELCOME MESSAGE-----\r\n";
-		push (@{ $client->{_negotiating_commands} }, $data);
+		push(@{ $client->{_negotiating_commands} }, $data);
 		$data = "VE\x00$VERSION";
-		push (@{ $client->{_negotiating_commands} }, $data);
+		push(@{ $client->{_negotiating_commands} }, $data);
 		$data = "COS\x00" . _bin2asc($client->{_compatabilityscalar});
-		push (@{ $client->{_negotiating_commands} }, $data);
+		push(@{ $client->{_negotiating_commands} }, $data);
 		$data = "SVE\x00" . $Storable::VERSION . "\x00" . _bin2asc(nfreeze($client->{_compatabilityreference}));
-		push (@{ $client->{_negotiating_commands} }, $data);
+		push(@{ $client->{_negotiating_commands} }, $data);
 
 		if (!$client->{_donotencrypt}) {
 
@@ -1412,9 +2582,9 @@ sub _serverclient_negotiate_sendnext {
 				$client->{_encrypt}         = $key;
 				$tempscalar                 = $client->{_compatabilityscalar};
 				if (_encrypt($client, \$tempscalar)) {
-					push (@available, $key);
+					push(@available, $key);
 					$data = "EM\x00$key\x00" . $_ENCRYPT_AVAILABLE{$key}{version} . "\x00" . _bin2asc(ref($tempprivate) ? nfreeze $tempprivate : $tempprivate) . "\x00" . _bin2asc($tempscalar);
-					push (@{ $client->{_negotiating_commands} }, $data);
+					push(@{ $client->{_negotiating_commands} }, $data);
 				}
 				delete $client->{_remotepublickey};
 				delete $client->{_encrypt};
@@ -1423,8 +2593,8 @@ sub _serverclient_negotiate_sendnext {
 			#
 			# Old method
 			#
-			$data = "EA" . join ("", map { "\x00$_" } @available);
-			push (@{ $client->{_negotiating_commands} }, $data);
+			$data = "EA" . join("", map { "\x00$_" } @available);
+			push(@{ $client->{_negotiating_commands} }, $data);
 		}
 		if (!$client->{_donotcompress}) {
 
@@ -1439,12 +2609,12 @@ sub _serverclient_negotiate_sendnext {
 					# I was told not to compress with this module
 					next;
 				}
-				$client->{_compress} = $_;
+				$client->{_compress} = $key;
 				$tempscalar = $client->{_compatabilityscalar};
 				if (_compress($client, \$tempscalar)) {
-					push (@available, $key);
+					push(@available, $key);
 					$data = "CM\x00$_\x00" . $_COMPRESS_AVAILABLE{$_}{version} . "\x00" . _bin2asc($tempscalar);
-					push (@{ $client->{_negotiating_commands} }, $data);
+					push(@{ $client->{_negotiating_commands} }, $data);
 				}
 				delete $client->{_compress};
 			}
@@ -1452,17 +2622,17 @@ sub _serverclient_negotiate_sendnext {
 			#
 			# Old method
 			#
-			$data = "CA" . join ("", map { "\x00$_" } @available);
-			push (@{ $client->{_negotiating_commands} }, $data);
+			$data = "CA" . join("", map { "\x00$_" } @available);
+			push(@{ $client->{_negotiating_commands} }, $data);
 		}
 		if (defined $client->{_password}) {
 			if (!exists $client->{_cryptsalt}) {
 				$client->{_cryptsalt} = _genrandstring(2, 1);
 			}
 			$data = "CS\x00" . $client->{_cryptsalt};
-			push (@{ $client->{_negotiating_commands} }, $data);
+			push(@{ $client->{_negotiating_commands} }, $data);
 		}
-		push (@{ $client->{_negotiating_commands} }, "EN");
+		push(@{ $client->{_negotiating_commands} }, "EN");
 	}
 
 	$data = shift @{ $client->{_negotiating_commands} };
@@ -1486,11 +2656,13 @@ sub _serverclient_negotiate_sendnext {
 
 #
 # This is called whenever a client (true client or serverclient) receives data without the realdata bit set
+# Takes client as first argument
+# Takes optional data as second argument, otherwise calls data() method to get it
 # It would parse the data and probably set variables inside the client object
 #
 sub _parseinternaldata {
 	my $client = shift;
-	my $data;
+	my $data   = shift;
 	if ($client->{_mode} eq "serverclient" && $client->{_negotiating}) {
 
 		# The serverclient is still negotiating
@@ -1502,8 +2674,18 @@ sub _parseinternaldata {
 	}
 	else {
 
+		#
 		# It's normal internal data
-		$data = $client->data(1);
+		#
+		if (!defined $data) {
+
+			#
+			# Data was not supplied - get it from bucket
+			#
+			$data = $client->data();
+		}
+
+		# Now do something with it
 	}
 }
 
@@ -1603,7 +2785,7 @@ sub _new_client {
 	$self->{_donotencrypt}      = ($para{donotencrypt}) ? 1 : 0;
 	$self->{_donotcheckversion} = ($para{donotcheckversion}) ? 1 : 0;
 	$self->{_localpublickey}    = "";
-	$self->{_data}              = [];
+	$self->{_databucket}        = [];
 
 	#
 	# Populate donotcompresswith with the keys of the supplied module names
@@ -1726,10 +2908,9 @@ sub _new_server {
 }
 
 #
-# This takes a client object and tries to extract a full packet out of it's received data buffer
-# If no valid data found, returns undef
-# If data found, it deletes it from the data buffer and pushes it into the data field
-# Then returns 1 if the data was real data, or 0 if the data was not real data (internal data)
+# This takes a client object and tries to extract as many data buckets as possible out of it's data buffer
+# If no buckets were extracted, returns false
+# Otherwise returns true
 #
 sub _extractdata {
 	my $client = shift;
@@ -1777,8 +2958,27 @@ sub _extractdata {
 			return undef;
 		}
 	}
-	push (@{ $client->{_data} }, $data);
-	return ($realdata);
+
+	#
+	# We extracted it fine from the buffer, we add it in the data buckets
+	#
+	push(
+		@{ $client->{_databucket} },
+		{
+			data     => $data,
+			realdata => $realdata,
+		}
+	);
+
+	#
+	# Let's push our luck and see if we can extract more :)
+	#
+	_extractdata($client);
+
+	#
+	# All is good, we know we extracted at least 1 bucket
+	#
+	return (1);
 }
 
 #
@@ -1800,7 +3000,6 @@ sub _send {
 	my $key;
 	my $finaldata;
 	my $packet;
-	my $packetsize = 4096;
 	my $temp;
 	my $bytes_written;
 	my $complexstructure = ref($data);
@@ -1858,8 +3057,8 @@ sub _send {
 	$len       = length($finaldata);
 	$temp      = 0;
 	while (length($finaldata)) {
-		$packet = substr($finaldata, 0, $packetsize);
-		substr($finaldata, 0, $packetsize) = '';
+		$packet = substr($finaldata, 0, $PACKETSIZE);
+		substr($finaldata, 0, $PACKETSIZE) = '';
 		$bytes_written = syswrite($sock, $packet, length($packet));
 		if (!defined $bytes_written) {
 			$@ = "Error writing to socket while sending data: $!";
@@ -1876,1037 +3075,7 @@ sub _send {
 	}
 }
 
-# Autoload methods go after =cut, and are processed by the autosplit program.
-
-1;
-__END__
-
 #
-# POD DOCUMENTATION:
+# Leave me alone:
 #
-
-=head1 NAME
-
-Net::EasyTCP - Easily create secure, bandwidth-friendly TCP/IP clients and servers
-
-=head1 FEATURES
-
-=over 4
-
-=item *
-
-One easy module to create both clients and servers
-
-=item *
-
-Object Oriented interface
-
-=item *
-
-Event-based callbacks in server mode
-
-=item *
-
-Internal protocol to take care of all the common transport problems
-
-=item *
-
-Transparent encryption
-
-=item *
-
-Transparent compression
-
-=back
-
-=head1 SYNOPSIS
-
-=over 4
-
-=item SERVER EXAMPLE:
-
-	use Net::EasyTCP;
-
-	#
-	# Create the server object
-	#
-	$server = new Net::EasyTCP(
-		mode            =>      "server",
-		port            =>      2345,
-	)
-	|| die "ERROR CREATING SERVER: $@\n";
-
-	#
-	# Tell it about the callbacks to call
-	# on known events
-	#
-	$server->setcallback(
-		data            =>      \&gotdata,
-		connect         =>      \&connected,
-		disconnect	=>	\&disconnected,
-	)
-	|| die "ERROR SETTING CALLBACKS: $@\n";
-
-	#
-	# Start the server
-	#
-	$server->start() || die "ERROR STARTING SERVER: $@\n";
-
-	#
-	# This sub gets called when a client sends us data
-	#
-	sub gotdata {
-		my $client = shift;
-		my $serial = $client->serial();
-		my $data = $client->data();
-		print "Client $serial sent me some data, sending it right back to them again\n";
-		$client->send($data) || die "ERROR SENDING TO CLIENT: $@\n";
-		if ($data eq "QUIT") {
-			$client->close() || die "ERROR CLOSING CLIENT: $@\n";
-		}
-		elsif ($data eq "DIE") {
-			$server->stop() || die "ERROR STOPPING SERVER: $@\n";
-		}
-	}
-
-	#
-	# This sub gets called when a new client connects
-	#
-	sub connected {
-		my $client = shift;
-		my $serial = $client->serial();
-		print "Client $serial just connected\n";
-	}
-
-	#
-	# This sub gets called when an existing client disconnects
-	#
-	sub disconnected {
-		my $client = shift;
-		my $serial = $client->serial();
-		print "Client $serial just disconnected\n";
-	}
-
-=item CLIENT EXAMPLE:
-
-	use Net::EasyTCP;
-
-	#
-	# Create a new client and connect to a server
-	#
-	$client = new Net::EasyTCP(
-		mode            =>      "client",
-		host            =>      'localhost',
-		port            =>      2345,
-	)
-	|| die "ERROR CREATING CLIENT: $@\n";
-
-	#
-	# Send and receive a simple string
-	#
-	$client->send("HELLO THERE") || die "ERROR SENDING: $@\n";
-	$reply = $client->receive() || die "ERROR RECEIVING: $@\n";
-
-	#
-	# Send and receive complex objects/strings/arrays/hashes by reference
-	#
-	%hash = ("to be or" => "not to be" , "just another" => "perl hacker");
-	$client->send(\%hash) || die "ERROR SENDING: $@\n";
-	$reply = $client->receive() || die "ERROR RECEIVING: $@\n";
-	foreach (keys %{$reply}) {
-		print "Received key: $_ = $reply->{$_}\n";
-	}
-
-	#
-	# Send and receive large binary data
-	#
-	for (1..4096) {
-		for (0..255) {
-			$largedata .= chr($_);
-		}
-	}
-	$client->send($largedata) || die "ERROR SENDING: $@\n";
-	$reply = $client->receive() || die "ERROR RECEIVING: $@\n";
-
-	#
-	# Cleanly disconnect from the server
-	#
-	$client->close();
-
-=back
-
-=head1 DESCRIPTION
-
-This class allows you to easily create TCP/IP clients and servers and provides an OO interface to manage the connection(s).  This allows you to concentrate on the application rather than on the transport.
-
-You still have to engineer your high-level protocol. For example, if you're writing an SMTP client-server pair, you will have to teach your client to send "HELO" when it connects, and you will have to teach your server what to do once it receives the "HELO" command, and so forth.
-
-What you won't have to do is worry about how the command will get there, about line termination, about binary data, complex-structure serialization, encryption, compression, or about fragmented packets on the received end.  All of these will be taken care of by this class.
-
-=head1 CONSTRUCTOR
-
-=over 4
-
-=item new(%hash)
-
-Constructs and returns a new Net::EasyTCP object.  Such an object behaves in one of two modes (that needs to be supplied to new() on creation time).  You can create either a server object (which accepts connections from several clients) or a client object (which initiates a connection to a server).
-
-new() expects to be passed a hash. The following keys are accepted:
-
-=over 4
-
-=item donotcheckversion
-
-Set to 1 to force a client to continue connecting even if an encryption/compression/Storable module version mismatch is detected. (Using this is highly unrecommended, you should upgrade the module in question to the same version on both ends)
-Note that as of Net::EasyTCP version 0.20, this parameter is fairly useless since that version (and higher) do not require external modules to have the same version anymore, but instead determine compatability between different versions dynamically.  See the accompanying Changes file for more details.
-(Optional and acceptable when mode is "client")
-
-=item donotcompress
-
-Set to 1 to forcefully disable L<compression|COMPRESSION AND ENCRYPTION> even if the appropriate module(s) are found.
-(Optional)
-
-=item donotcompresswith
-
-Set to a scalar or an arrayref of compression module(s) you'd like to avoid compressing with.  For example, if you do not want to use Compress::LZF, you can do so by utilizing this option.
-(Optional)
-
-=item donotencrypt
-
-Set to 1 to forcefully disable L<encryption|COMPRESSION AND ENCRYPTION> even if the appropriate module(s) are found.
-(Optional)
-
-=item donotencryptwith
-
-Set to a scalar or an arrayref of encryption module(s) you'd like to avoid encrypting with.  For example, Crypt::RSA takes a long time to initialize keys and encrypt/decrypt, so you can avoid using it by utilizing this option.
-(Optional)
-
-=item host
-
-Must be set to the hostname/IP address to connect to.
-(Mandatory when mode is "client")
-
-=item mode
-
-Must be set to either "client" or "server" according to the type of object you want returned.
-(Mandatory)
-
-=item password
-
-Defines a password to use for the connection.  When mode is "server" this password will be required from clients before the full connection is accepted .  When mode is "client" this is the password that the server connecting to requires.
-
-Also, when encryption using a symmetric encryption module is used, this password is included as part of the secret "key" for encrypting the data.
-(Optional)
-
-=item port
-
-Must be set to the port the client connects to (if mode is "client") or to the port to listen to (if mode is "server"). If you're writing a client+server pair, they must both use the same port number.
-(Mandatory)
-
-=item timeout
-
-Set to an integer (seconds) that a client attempting to establish a TCP/IP connection to a server will timeout after.  If not supplied, the default is 30 seconds. (Optional and acceptable only when mode is "client")
-
-=item welcome
-
-If someone uses an interactive telnet program to telnet to the server, they will see this welcome message.
-(Optional and acceptable only when mode is "server")
-
-=back
-
-=back
-
-=head1 METHODS
-
-B<[C] = Available to objects created as mode "client">
-
-B<[H] = Available to "hybrid" client objects, as in "the server-side client objects created when a new client connects". These are the objects passed to your server's callbacks.  Such hybrid clients behave almost exactly like a normal "client" object you create yourself, except for a slight difference in the available methods to retrieve data.>
-
-B<[S] = Available to objects created as mode "server">
-
-=over 4
-
-=item addclientip(@array)
-
-B<[S]> Adds an IP address (or IP addresses) to the list of allowed clients to a server.  If this is done, the server will not accept connections from clients not in it's list.
-
-The compliment of this function is deleteclientip() .
-
-=item callback(%hash)
-
-See setcallback()
-
-=item clients()
-
-B<[S]> Returns all the clients currently connected to the server.  If called in array context will return an array of client objects.  If called in scalar context will return the number of clients connected.
-
-=item close()
-
-B<[C][H]> Instructs a client object to close it's connection with a server.
-
-=item compression()
-
-B<[C][H]> Returns the name of the module used as the compression module for this connection, undef if no compression occurs.
-
-=item data()
-
-B<[H]> Retrieves the previously-retrieved data associated with a hybrid client object.  This method is typically used from inside the callback sub associated with the "data" event, since the callback sub is passed nothing more than a client object.
-
-=item deleteclientip(@array)
-
-B<[S]> Deletes an IP address (or IP addresses) from the list of allowed clients to a server.  The IP address (or IP addresses) supplied will no longer be able to connect to the server.
-
-The compliment of this function is addclientip() .
-
-=item disconnect()
-
-See close()
-
-=item do_one_loop()
-
-B<[S]> Instructs a server object to "do one loop" and return ASAP.  This method needs to be called VERY frequently for a server object to function as expected (either through some sort of loop inside your program if you need to do other things beside serve clients, or via the start() method if your entire program is dedicated to serving clients).  Each one loop will help the server do it's job, including accepting new clients, receiving data from them, firing off the appropriate callbacks etc.
-
-=item encryption()
-
-B<[C][H]> Returns the name of the module used as the encryption module for this connection, undef if no encryption occurs.
-
-=item mode()
-
-B<[C][H][S]> Identifies the mode of the object.  Returns either "client" or "server"
-
-=item receive($timeout)
-
-B<[C]> Receives data sent to the client by a server and returns it.  It will block until data is received or until a certain timeout of inactivity (no data transferring) has occurred.
-
-It accepts an optional parameter, a timeout value in seconds.  If none is supplied it will default to 300.
-
-=item remoteip()
-
-B<[C][H]> Returns the IP address of the host on the other end of the connection.
-
-=item remoteport()
-
-B<[C][H]> Returns the port of the host on the other end of the connection.
-
-=item running()
-
-B<[S]> Returns true if the server is running (started), false if it is not.
-
-=item send($data)
-
-B<[C][H]> Sends data to a server.  It can be used on client objects you create with the new() constructor, clients objects returned by the clients() method, or with client objects passed to your callback subs by a running server.
-
-It accepts one parameter, and that is the data to send.  The data can be a simple scalar or a reference to something more complex.
-
-=item serial()
-
-B<[H]> Retrieves the serial number of a client object,  This is a simple integer that allows your callback subs to easily differentiate between different clients.
-
-=item setcallback(%hash)
-
-B<[S]> Tells the server which subroutines to call when specific events happen. For example when a client sends the server data, the server calls the "data" callback sub.
-
-setcallback() expects to be passed a hash. Each key in the hash is the callback type identifier, and the value is a reference to a sub to call once that callback type event occurs.
-
-Valid keys in that hash are:
-
-=over 4
-
-=item connect
-
-Called when a new client connects to the server
-
-=item data
-
-Called when an existing client sends data to the server
-
-=item disconnect
-
-Called when an existing client disconnects
-
-=back
-
-Whenever a callback sub is called, it is passed a single parameter, a CLIENT OBJECT. The callback code may then use any of the methods available to client objects to do whatever it wants to do (Read data sent from the client, reply to the client, close the client connection etc...)
-
-
-=item socket()
-
-B<[C][H]> Returns the handle of the socket (actually an L<IO::Socket|IO::Socket> object) associated with the supplied object.  This is useful if you're interested in using L<IO::Select|IO::Select> or select() and want to add a client object's socket handle to the select list.
-
-Note that eventhough there's nothing stopping you from reading and writing directly to the socket handle you retrieve via this method, you should never do this since doing so would definately corrupt the internal protocol and may render your connection useless.  Instead you should use the send() and receive() methods.
-
-=item start(subref)
-
-B<[S]> Starts a server and does NOT return until the server is stopped via the stop() method.  This method is a simple while() wrapper around the do_one_loop() method and should be used if your entire program is dedicated to being a server, and does not need to do anything else concurrently.
-
-If you need to concurrently do other things when the server is running, then you can supply to start() the optional reference to a subroutine (very similar to the callback() method).  If that is supplied, it will be called every loop.  This is very similar to the callback subs, except that the called sub will be passed the server object that the start() method was called on (unlike normal client callbacks which are passed a client object).  The other alternative to performing other tasks concurrently is to not use the start() method at all and directly call do_one_loop() repeatedly in your own program.
-
-=item stop()
-
-B<[S]> Instructs a running server to stop and returns immediately (does not wait for the server to actually stop, which may be a few seconds later).  To check if the server is still running or not use the running() method.
-
-=back
-
-=head1 COMPRESSION AND ENCRYPTION
-
-Clients and servers written using this class will automatically compress and/or encrypt the transferred data if the appropriate modules are found.
-
-Compression will be automatically enabled if one (or more) of: L<Compress::Zlib|Compress::Zlib> or L<Compress::LZF|Compress::LZF> are installed on both the client and the server.
-
-As-symmetric encryption will be automatically enabled if L<Crypt::RSA|Crypt::RSA> is installed on both the client and the server.
-
-Symmetric encryption will be automatically enabled if one (or more) of: L<Crypt::Rijndael|Crypt::Rijndael>* or L<Crypt::RC6|Crypt::RC6>* or L<Crypt::Blowfish|Crypt::Blowfish>* or L<Crypt::DES_EDE3|Crypt::DES_EDE3>* or L<Crypt::DES|Crypt::DES>* or L<Crypt::Twofish2|Crypt::Twofish2>* or L<Crypt::Twofish|Crypt::Twofish>* or L<Crypt::TEA|Crypt::TEA>* or L<Crypt::CipherSaber|Crypt::CipherSaber> are installed on both the client and the server.
-
-Strong randomization will be automatically enabled if L<Crypt::Random|Crypt::Random> is installed; otherwise perl's internal rand() is used to generate random keys.
-
-Preference to the compression/encryption method used is determind by availablity checking following the order in which they are presented in the above lists.
-
-Note that during the negotiation upon connection, servers and clients written using Net::EasyTCP version lower than 0.20 communicated the version of the selected encryption/compression modules.  If a version mismatch is found, the client reported a connection failure stating the reason (module version mismatch).  This behavior was necessary since it was observed that different versions of the same module could produce incompatible output.  If this is encountered, it is strongly recommended you upgrade the module in question to the same version on both ends, or more preferrably, Net::EasyTCP on both ends to the latest version, at a minimum 0.20.  However, if you wish to forcefully connect overlooking a version mismatch (risking instability/random problems/data corruption) you may supply the "donotcheckversion" key to the new() constructor of the client object.  This is no longer a requirement of Net::EasyTCP version 0.20 or higher since these newer versions have the ability to use different-version modules as long as their data was compatible, which was automatically determined at negotiation time.
-
-To find out which module(s) have been negotiated for use you can use the compression() and encryption() methods.
-
-* Note that for this class's purposes, L<Crypt::CBC|Crypt::CBC> is a requirement to use any of the encryption modules with a * next to it's name in the above list.  So eventhough you may have these modules installed on both the client and the server, they will not be used unless L<Crypt::CBC|Crypt::CBC> is also installed on both ends.
-
-* Note that the nature of symmetric cryptography dictates sharing the secret keys somehow.  It is therefore highly recommend to use an As-symmetric cryptography module (such as Crypt::RSA) for serious encryption needs; as a determined hacker might find it trivial to decrypt your data with other symmetric modules.
-
-* Note that if symmetric cryptography is used, then it is highly recommended to also use the "password" feature on your servers and clients; since then the "password" will, aside from authentication,  be also used in the "secret key" to encrypt the data.  Without a password, the secret key has to be transmitted to the other side during the handshake, significantly lowering the overall security of the data.
-
-If the above modules are installed but you want to forcefully disable compression or encryption, supply the "donotcompress" and/or "donotencrypt" keys to the new() constructor.  If you would like to forcefully disable the use of only some modules, supply the "donotcompresswith" and/or "donotencryptwith" keys to the new() constructor.  This could be used for example to disable the use of Crypt::RSA if you cannot afford the time it takes to generate it's keypairs etc...
-
-=head1 RETURN VALUES AND ERRORS
-
-The constructor and all methods return something that evaluates to true when successful, and to false when not successful.
-
-There are a couple of exceptions to the above rule and they are the following methods:
-
-=over 4
-
-=item *
-
-clients()
-
-=item *
-
-data()
-
-=back
-
-The above methods may return something that evaluates to false (such as an empty string, an empty array, or the string "0") eventhough there was no error.  In that case check if the returned value is defined or not, using the defined() Perl function.
-
-If not successful, the variable $@ will contain a description of the error that occurred.
-
-=head1 NOTES
-
-=over 4
-
-=item Incompatability with Net::EasyTCP version 0.01
-
-Version 0.02 and later have had their internal protocol modified to a fairly large degree.  This has made compatability with version 0.01 impossible.  If you're going to use version 0.02 or later (highly recommended), then you will need to make sure that none of the clients/servers are still using version 0.01.  It is highly recommended to use the same version of this module on both sides.
-
-=item Internal Protocol
-
-This class implements a miniature protocol when it sends and receives data between it's clients and servers.  This means that a server created using this class cannot properly communicate with a normal client of any protocol (pop3/smtp/etc..) unless that client was also written using this class.  It also means that a client written with this class will not properly communicate with a different server (telnet/smtp/pop3 server for example, unless that server is implemented using this class also).  This limitation will not change in future releases due to the plethora of advantages the internal protocol gives us.
-
-In other words, if you write a server using this class, write the client using this class also, and vice versa.
-
-=item Delays
-
-This class does not use the fork() method whatsoever.  This means that all it's input/output and multi-socket handling is done via select().
-
-This leads to the following limitation:  When a server calls one of your callback subs, it waits for it to return and therefore cannot do anything else.  If your callback sub takes 5 minutes to return, then the server will not be able to do anything for 5 minutes, such as acknowledge new clients, or process input from other clients.
-
-In other words, make the code in your callbacks' subs' minimal and strive to make it return as fast as possible.
-
-=item Deadlocks
-
-As with any client-server scenario, make sure you engineer how they're going to talk to each other, and the order they're going to talk to each other in, quite carefully.  If both ends of the connection are waiting for the other end to say something, you've got a deadlock.
-
-=back
-
-=head1 AUTHOR
-
-Mina Naguib
-http://www.topfx.com
-mnaguib@cpan.org
-
-=head1 SEE ALSO
-
-Perl(1), L<IO::Socket>, L<IO::Select>, L<Compress::Zlib>, L<Compress::LZF>, L<Crypt::RSA>, L<Crypt::CBC>, L<Crypt::Rijndael>, L<Crypt::RC6>, L<Crypt::Blowfish>, L<Crypt::DES_EDE3>, L<Crypt::DES>, L<Crypt::Twofish2>, L<Crypt::Twofish>, L<Crypt::TEA>, L<Crypt::CipherSaber>, L<Crypt::Random>, defined(), rand()
-
-=head1 COPYRIGHT
-
-Copyright (C) 2001-2003 Mina Naguib.  All rights reserved.  Use is subject to the Perl license.
-
-=cut
-#
-# The main constructor. This calls either _new_client or _new_server depending on the supplied mode
-#
-sub new {
-	my $class = shift;
-	my %para  = @_;
-
-	# Let's lowercase all keys in %para
-	foreach (keys %para) {
-		if ($_ ne lc($_)) {
-			$para{ lc($_) } = $para{$_};
-			delete $para{$_};
-		}
-	}
-	if ($para{mode} =~ /^c/i) {
-		return _new_client($class, %para);
-	}
-	elsif ($para{mode} =~ /^s/i) {
-		return _new_server($class, %para);
-	}
-	else {
-		$@ = "Supplied mode '$para{mode}' unacceptable. Must be either 'client' or 'server'";
-		return undef;
-	}
-}
-
-#
-# Make callback() a synonim to setcallback()
-#
-
-sub callback {
-	return setcallback(@_);
-}
-
-#
-# This method adds an ip address(es) to the list of valid IPs a server can accept connections
-# from.
-#
-sub addclientip {
-	my $self = shift;
-	my @ips  = @_;
-	if ($self->{_mode} ne "server") {
-		$@ = "$self->{_mode} cannot use method addclientip()";
-		return undef;
-	}
-	foreach (@ips) {
-		$self->{_clientip}{$_} = 1;
-	}
-	return 1;
-}
-
-#
-# This method does the opposite of addclient(), it removes an ip address(es) from the list
-# of valid IPs a server can accept connections from.
-#
-sub deleteclientip {
-	my $self = shift;
-	my @ips  = @_;
-	if ($self->{_mode} ne "server") {
-		$@ = "$self->{_mode} cannot use method deleteclientip()";
-		return undef;
-	}
-	foreach (@ips) {
-		delete $self->{_clientip}{$_};
-	}
-	return 1;
-}
-
-#
-#
-# This method modifies the _callback_XYZ in a server object. These are the routines
-# the server calls when an event (data, connect, disconnect) happens
-#
-sub setcallback {
-	my $self = shift;
-	my %para = @_;
-	if ($self->{_mode} ne "server") {
-		$@ = "$self->{_mode} cannot use method setcallback()";
-		return undef;
-	}
-	foreach (keys %para) {
-		if (ref($para{$_}) ne "CODE") {
-			$@ = "Callback $_ $para{$_} does not exist";
-			return 0;
-		}
-		$self->{_callbacks}->{$_} = $para{$_};
-	}
-	return 1;
-}
-
-#
-# This method starts the server and does not return until stop() is called.
-# All other behavior is delegated to do_one_loop()
-#
-sub start {
-	my $self     = shift;
-	my $callback = shift;
-	if ($self->{_mode} ne "server") {
-		$@ = "$self->{_mode} cannot use method start()";
-		return undef;
-	}
-	$self->{_running}     = 1;
-	$self->{_requeststop} = 0;
-
-	#
-	# Let's loop until we're stopped:
-	#
-	while (!$self->{_requeststop}) {
-		$self->do_one_loop() || return undef;
-		if ($callback && ref($callback) eq "CODE") {
-			&{$callback}($self);
-		}
-	}
-
-	#
-	# If we reach here the server's been stopped
-	#
-	$self->{_running}     = 0;
-	$self->{_requeststop} = 0;
-	return 1;
-}
-
-#
-# This method does "one loop" of server work and returns ASAP
-# It should be called very frequently, either through a while() loop in the program
-# or through the start() method
-#
-# It accepts new clients, accepts data from them, and fires off any callback events as necessary
-#
-sub do_one_loop {
-	my $self = shift;
-	my @ready;
-	my $clientsock;
-	my $tempdata;
-	my $serverclient;
-	my $realdata;
-	my $result;
-	my $negotiatingtimeout = 45;
-	my $peername;
-	my $remoteport;
-	my $remoteip;
-
-	if ($self->{_mode} ne "server") {
-		$@ = "$self->{_mode} cannot use method do_one_loop()";
-		return undef;
-	}
-	$self->{_lastglobalkeygentime} ||= time;
-	@ready = $self->{_selector}->can_read(1);
-	foreach (@ready) {
-		if ($_ == $self->{_sock}) {
-
-			#
-			# The SERVER SOCKET is ready for accepting a new client
-			#
-			$clientsock = $self->{_sock}->accept();
-			if (!$clientsock) {
-				$@ = "Error while accepting new connection: $!";
-				return undef;
-			}
-
-			#
-			# We get remote IP and port, we'll need them to see if client is allowed or not
-			#
-			$peername = getpeername($clientsock) or next;
-			($remoteport, $remoteip) = sockaddr_in($peername) or next;
-			$remoteip = inet_ntoa($remoteip) or next;
-
-			#
-			# We create a new client object and
-			# We see if client is allowed to connect to us
-			#
-			if (scalar(keys %{ $self->{_clientip} }) && !$self->{_clientip}{$remoteip}) {
-
-				#
-				# Client's IP is not allowed to connect to us
-				#
-				close($clientsock);
-			}
-			else {
-
-				#
-				# We add it to our SELECTOR pool :
-				#
-				$self->{_selector}->add($clientsock);
-
-				#
-				# We create a new client object:
-				#
-				$self->{_clients}->{$clientsock} = _new_client(
-					$self,
-					"_sock"       => $clientsock,
-					"_remoteport" => $remoteport,
-					"_remoteip"   => $remoteip
-				);
-
-				#
-				# We initialize some client variables:
-				#
-				$self->{_clients}->{$clientsock}->{_serial}                 = ++$_SERIAL;
-				$self->{_clients}->{$clientsock}->{_compatabilityscalar}    = _genrandstring(129);
-				$self->{_clients}->{$clientsock}->{_compatabilityreference} = _gencompatabilityreference($self->{_clients}->{$clientsock}->{_compatabilityscalar});
-
-				#
-				# And we make it inherit some stuff from the server :
-				#
-				$self->{_clients}->{$clientsock}->{_donotencrypt}      = $self->{_donotencrypt};
-				$self->{_clients}->{$clientsock}->{_donotencryptwith}  = $self->{_donotencryptwith};
-				$self->{_clients}->{$clientsock}->{_donotcompress}     = $self->{_donotcompress};
-				$self->{_clients}->{$clientsock}->{_donotcompresswith} = $self->{_donotcompresswith};
-				$self->{_clients}->{$clientsock}->{_password}          = $self->{_password};
-				$self->{_clients}->{$clientsock}->{_callbacks}         = $self->{_callbacks};
-				$self->{_clients}->{$clientsock}->{_welcome}           = $self->{_welcome};
-				$self->{_clients}->{$clientsock}->{_selector}          = $self->{_selector};
-			}
-		}
-		else {
-
-			#
-			# One of the CLIENT sockets are ready
-			#
-			$result = sysread($_, $tempdata, 4096);
-			$serverclient = $self->{_clients}->{$_};
-			if (!defined $result) {
-
-				#
-				# Error somewhere during reading from that client
-				#
-				_callback($serverclient, "disconnect");
-				$serverclient->close();
-				delete $self->{_clients}->{$_};
-			}
-			elsif ($result == 0) {
-
-				#
-				# Client closed connection
-				#
-				_callback($serverclient, "disconnect");
-				$serverclient->close();
-				delete $self->{_clients}->{$_};
-			}
-			else {
-
-				#
-				# Client sent us some good data (not necessarily a full packet)
-				#
-				$serverclient->{_databuffer} .= $tempdata;
-				while (defined($realdata = _extractdata($serverclient))) {
-					if (!$realdata) {
-
-						# It's internal protocol data
-						_parseinternaldata($serverclient);
-					}
-					else {
-
-						# We found something and it's real data
-						_callback($serverclient, "data");
-					}
-				}
-			}
-		}
-	}
-
-	#
-	# Now we check on all the serverclients still negotiating and help them finish negotiating
-	# or weed out the ones timing out
-	#
-	foreach (keys %{ $self->{_clients} }) {
-		$serverclient = $self->{_clients}->{$_};
-		if ($serverclient->{_negotiating}) {
-			if (_serverclient_negotiate($serverclient)) {
-				_callback($serverclient, "connect");
-			}
-			elsif ((time - $serverclient->{_negotiating}) > $negotiatingtimeout) {
-				$serverclient->close();
-				delete $self->{_clients}->{$_};
-			}
-		}
-	}
-
-	#
-	# Now we re-generate the RSA keys if it's been over an hour
-	#
-	if (!$self->{_donotencrypt} && !$self->{_donotencryptwith}{"B"} && ((time - $self->{_lastglobalkeygentime}) >= 3600)) {
-		if (!_generateglobalkeypair('Crypt::RSA')) {
-			$@ = "Could not generate global Crypt::RSA keypairs. $@";
-			return undef;
-		}
-		$self->{_lastglobalkeygentime} = time;
-	}
-	return 1;
-}
-
-#
-# This method stops the server and makes it return.
-# Note: It doesn't stop the server immediately, it sets a flag
-# and the flag should in a few seconds cause the infinite loop in start() method to stop
-#
-sub stop {
-	my $self = shift;
-	if ($self->{_mode} ne "server") {
-		$@ = "$self->{_mode} cannot call method stop()";
-		return undef;
-	}
-	$self->{_requeststop} = 1;
-	return 1;
-}
-
-#
-# This method sends data to the socket associated with the object
-#
-sub send {
-	my $self = shift;
-	my $data = shift;
-	if ($self->{_mode} ne "client" && $self->{_mode} ne "serverclient") {
-		$@ = "$self->{_mode} cannot use method send()";
-		return undef;
-	}
-	return _send($self, $data);
-}
-
-#
-# This method returns the serial number associated with the object
-#
-sub serial {
-	my $self = shift;
-	if (!$self->{_serial}) {
-		$self->{_serial} = ++$_SERIAL;
-	}
-	return $self->{_serial};
-}
-
-#
-# This method returns the already-read data associated with the object
-# (typically the code in the callback assigned to callback_data would access this method)
-#
-sub data {
-	my $self         = shift;
-	my $returnlatest = shift;
-	my $data;
-	if ($self->{_mode} ne "client" && $self->{_mode} ne "serverclient") {
-		$@ = "$self->{_mode} cannot use method data()";
-		return undef;
-	}
-	if ($returnlatest) {
-		$data = pop (@{ $self->{_data} });
-	}
-	else {
-		$data = shift (@{ $self->{_data} });
-	}
-	return $data;
-}
-
-#
-# This method reads data from the socket associated with the object and returns it
-# Accepts an optional timeout as a first parameter, otherwise defaults to timeout
-# Second parameter is internal and is used to haveit return non-realdata instead of passing it to _parseinternaldata()
-# Returns the data if successful, undef if not
-#
-sub receive {
-	my $self               = shift;
-	my $timeout            = shift || 300;
-	my $returninternaldata = shift || 0;
-	my $temp;
-	my $realdata;
-	my $result;
-	my $lastactivity = time;
-	my $selector;
-	my @ready;
-
-	if ($self->{_mode} ne "client" && $self->{_mode} ne "serverclient") {
-		$@ = "$self->{_mode} cannot use method receive()";
-		return undef;
-	}
-	$selector = new IO::Select;
-	$selector->add($self->{_sock});
-	while ((time - $lastactivity) < $timeout) {
-		@ready = $selector->can_read($timeout);
-		if (!@ready) {
-			if (!$! || $! =~ /interrupt/i) {
-				next;
-			}
-			else {
-				last;
-			}
-		}
-		$result = sysread($self->{_sock}, $temp, 4096);
-		if (!defined $result) {
-
-			# Error in socket
-			$@ = "Error reading from socket: $!";
-			return undef;
-		}
-		elsif ($result == 0) {
-
-			# Socket closed
-			$@ = "Socket closed when attempted reading";
-			return undef;
-		}
-		else {
-
-			# Read good data
-			$lastactivity = time;
-			$self->{_databuffer} .= $temp;
-			while (1) {
-				if (defined($realdata = _extractdata($self))) {
-
-					# We read something
-					if ($realdata) {
-
-						# It's real data that belongs to the application
-						return $self->data(1);
-					}
-					elsif ($returninternaldata) {
-
-						# It's internal but we've been instructed to return it
-						return $self->data(1);
-					}
-					else {
-
-						# It's internal data so we parse it
-						_parseinternaldata($self);
-					}
-				}
-				else {
-
-					# There's no (more) data to be extracted
-					last;
-				}
-			}
-		}
-	}
-	$@ = "Timed out waiting to receive data";
-	return undef;
-}
-
-#
-# This method is a synonym for close()
-#
-sub disconnect {
-	return close(@_);
-}
-
-#
-# This method closes the socket associated with the object
-#
-sub close {
-	my $self = shift;
-	if ($self->{_mode} ne "client" && $self->{_mode} ne "serverclient") {
-		$@ = "$self->{_mode} cannot use method close()";
-		return undef;
-	}
-	if ($self->{_selector} && $self->{_selector}->exists($self->{_sock})) {
-
-		# If the server selector reads this, let's make it not...
-		$self->{_selector}->remove($self->{_sock});
-	}
-	$self->{_sock}->close() if defined $self->{_sock};
-	$self->{_sock}       = undef;
-	$self->{_data}       = [];
-	$self->{_databuffer} = undef;
-	return 1;
-}
-
-#
-# This method returns true or false, depending on if the server is running or not
-#
-sub running {
-	my $self = shift;
-	if ($self->{_mode} ne "server") {
-		$@ = "$self->{_mode} cannot use method running()";
-		return undef;
-	}
-	return $self->{_running};
-}
-
-#
-# This replies saying what type of object it's passed
-#
-sub mode {
-	my $self = shift;
-	my $mode = ($self->{_mode} eq "server") ? "server" : "client";
-	return $mode;
-}
-
-#
-# This method replies saying what type of encryption is used, undef if none
-#
-sub encryption {
-	my $self      = shift;
-	my $modulekey = $self->{_encrypt};
-	if ($self->{_donotencrypt} || !$modulekey) {
-		return undef;
-	}
-	return $_ENCRYPT_AVAILABLE{$modulekey}{name} || "Unknown module name for modulekey [$modulekey]";
-}
-
-#
-# This method replies saying what type of compression is used, undef if none
-#
-sub compression {
-	my $self      = shift;
-	my $modulekey = $self->{_compress};
-	if ($self->{_donotcompress} || !$modulekey) {
-		return undef;
-	}
-	return $_COMPRESS_AVAILABLE{$modulekey}{name} || "Unknown module name for modulekey [$modulekey]";
-}
-
-#
-# This returns the IO::Socket object associated with a connection
-#
-sub socket {
-	my $self = shift;
-	if ($self->{_mode} ne "client" && $self->{_mode} ne "serverclient") {
-		$@ = "$self->{_mode} cannot use method socket()";
-		return undef;
-	}
-	return ($self->{_sock} || undef);
-}
-
-#
-# This returns an array of all the clients connected to a server in array context
-# or the number of clients in scalar context
-# or undef if there are no clients or error
-#
-sub clients {
-	my $self = shift;
-	my @clients;
-	if ($self->{_mode} ne "server") {
-		$@ = "$self->{_mode} cannot use method clients()";
-		return undef;
-	}
-	foreach (values %{ $self->{_clients} }) {
-		if (!$_->{_negotiating}) {
-			push (@clients, $_);
-		}
-	}
-	if (@clients) {
-		return wantarray ? @clients : scalar @clients;
-	}
-	else {
-		return undef;
-	}
-}
-
-#
-# This takes a client object and returns the IP address of the remote connection
-#
-sub remoteip {
-	my $self = shift;
-	my $temp;
-	if ($self->{_mode} ne "client" && $self->{_mode} ne "serverclient") {
-		$@ = "$self->{_mode} cannot use method remoteip()";
-		return undef;
-	}
-	return $self->{_remoteip};
-}
-
-#
-# This takes a client object and returns the PORT of the remote connection
-#
-sub remoteport {
-	my $self = shift;
-	my $temp;
-	if ($self->{_mode} ne "client" && $self->{_mode} ne "serverclient") {
-		$@ = "$self->{_mode} cannot use method remoteport()";
-		return undef;
-	}
-	return $self->{_remoteport};
-}
-
 1;
