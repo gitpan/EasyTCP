@@ -1,17 +1,13 @@
-# Before `make install' is performed this script should be runnable with
-# `make test'. After `make install' it should work as `perl test.pl'
-
-######################### We start with some black magic to print on failure.
-
-# Change 1..1 below to 1..last_test_to_print .
-# (It may become useful if the test is moved to ./t subdirectory.)
+#
+# $Header: /cvsroot/Net::EasyTCP/test.pl,v 1.17 2002/11/05 02:37:57 mina Exp $
+#
 
 BEGIN {
 	$| = 1;
 	select(STDERR);
 	$| = 1;
 	select(STDOUT);
-	print "1..11\n";
+	print "1..7\n";
 	}
 END {print "not ok 1\n" unless $loaded;}
 use Net::EasyTCP;
@@ -19,13 +15,13 @@ $loaded = 1;
 print "ok 1\n";
 
 ######################### End of black magic.
-
+#
 #
 # Because windows is such a crappy OS that does not support (well) a fork() or alarm(), we can not possibly
 # run this test. (HOWEVER, THE MODULE STILL WORKS OK !) Sorry !
 #
 if ($^O =~ /win32/i) {
-	for (2..11) {
+	for (2..7) {
 		print "ok $_\n";
 		}
 	warn ("\n\nWARNING:  SINCE YOU'RE RUNNING WINDOWS, WE COULD NOT TRULY TEST CLIENT-SERVER FUNCTIONALITY WITHIN 1 PROCESS. ASSUMING TEST SUCCEEDED\n\n");
@@ -40,9 +36,6 @@ sub res() {
 	my $res = shift;
 	my $desc = shift;
 	$num++;
-	#
-	# TO ENABLE THE DESCRIPTIONS OF WHAT EACH TEST IS, UN-COMMENT THE FOLLOWING LINE
-	#
 	if ($res) {
 		print "ok $num\n";
 		}
@@ -53,50 +46,74 @@ sub res() {
 		}
 	}
 
-&startserver();
-
 &startclient();
 
-while ($server->clients()) {
-	}
+&startserver();
 
 sub startserver() {
 	my $temp;
+	my $server;
+
 	$server = new Net::EasyTCP(
-		mode            =>      "server",
+		mode				=>      "server",
 		port            =>      2345,
 		password			=>		"just another perl hacker",
 		);
 	&res ($server, "Create new server");
+
 	$temp = $server->setcallback(
 		data            =>      \&gotdata,
 		connect         =>      \&connected,
 		disconnect      =>      \&disconnected,
 		);
 	&res($temp, "Set callbacks");
-	&do_one_loop();
+
+	$server->start();
 	}
 
 sub startclient() {
 	my $temp;
+	my $pid;
+	my $starttime;
+	my $maxelapsed = "15";
 
-	$client = new Net::EasyTCP(
-		mode            =>      "client",
-		host            =>      '127.0.0.1',
-		port            =>      2345,
-		password			=>		"just another perl hacker",
-		);
-	&res($client, "Create client");
+	$pid= fork();
+	if ($pid) {
+		# I'm the parent
+		return;
+		}
+	elsif ($pid == 0) {
+		# I'm the client
+		}
+	else {
+		die "ERROR: FAILED TO FORK A PROCESS FOR A CLIENT: $!\n";
+		}
+		
+	$starttime = time;
+
+	while ((time - $starttime) <= $maxelapsed) {
+		$client = new Net::EasyTCP(
+			mode				=>		"client",
+			host				=>		'127.0.0.1',
+			port				=>		2345,
+			password			=>		"just another perl hacker",
+			);
+		if ($client) {
+			last;
+			}
+		}
+	$client || die "ERROR: CLIENT FAILED TO BE CREATED WITHIN $maxelapsed SECONDS: $@\n";
 
 	$temp = $client->receive();
-	&res($temp eq "SEND ME COMPLEX", "Client receive data");
+	($temp eq "SEND ME COMPLEX") || die "ERROR: CLIENT RECEIVED [$temp] INSTEAD OF [SEND ME COMPLEX]\n";
 
-	$temp = $client->send({"complex"=>"data"});
-	&res($temp, "Client send complex data");
+	$temp = $client->send({"complex"=>"data"})
+		|| die "ERROR: CLIENT FAILED TO SEND HASH REFERENCE: $@\n";
 
-	$temp = $client->close();
-	&res($temp, "Client close connection");
+	$temp = $client->close()
+		|| die "ERROR: CLIENT FAILED TO CLOSE CONNECTION: $@\n";
 
+	exit(0);
 	}
 
 sub connected() {
@@ -119,11 +136,3 @@ sub disconnected() {
 	exit(0);
 	}
 
-sub do_one_loop() {
-	my $temp = $server->do_one_loop();
-	if (!$temp) {
-		die "Error from server's do_one_loop(): $@\n";
-		}
-	$SIG{ALRM} = \&do_one_loop;
-	alarm(1);
-	}

@@ -1,5 +1,9 @@
 package Net::EasyTCP;
 
+#
+# $Header: /cvsroot/Net::EasyTCP/EasyTCP.pm,v 1.96 2002/11/10 17:20:33 mina Exp $
+#
+
 use strict;
 use vars qw($VERSION @ISA @EXPORT @EXPORT_OK $_SERIAL %_COMPRESS_AVAILABLE %_ENCRYPT_AVAILABLE %_MISC_AVAILABLE);
 
@@ -9,7 +13,7 @@ use Storable qw(nfreeze thaw);
 
 #
 # This block's purpose is to:
-# . Put the list of available modules in %_COMPRESS_AVAILABLE and %_ENCRYPT_AVAILABLE and %_MISC_AVAILABLE
+# Put the list of available modules in %_COMPRESS_AVAILABLE and %_ENCRYPT_AVAILABLE and %_MISC_AVAILABLE
 #
 BEGIN {
 	my $version;
@@ -116,7 +120,7 @@ require AutoLoader;
 # names by default without a very good reason. Use EXPORT_OK instead.
 # Do not simply export all your public functions/methods/constants.
 @EXPORT = qw();
-$VERSION = '0.16';
+$VERSION = '0.17';
 
 # Preloaded methods go here.
 
@@ -168,7 +172,7 @@ sub _munge() {
 	#
 	# Munge's tricky because is existed on and off in different versions
 	#
-	if ($client->{_version} == 0.07 || $client->{_version} == 0.08 || $client->{_version} >= 0.15) {
+	if (defined $data && ($client->{_version} == 0.07 || $client->{_version} == 0.08 || $client->{_version} >= 0.15)) {
 		# Peer supports munge
 		my $c;
 		my $t;
@@ -1017,7 +1021,7 @@ sub _new_server() {
 #
 sub _extractdata() {
 	my $client = shift;
-	my $key = substr($client->{_databuffer}, 0, 2);
+	my $key = (exists $client->{_databuffer}) ? substr($client->{_databuffer}, 0, 2) : '';
 	my ($alwayson, $complexstructure, $realdata, $reserved, $encrypted, $compressed, $lenlen);
 	my $lendata;
 	my $len;
@@ -1692,7 +1696,7 @@ sub do_one_loop() {
 	my $remoteport;
 	my $remoteip;
 	if ($self->{_mode} ne "server") {
-		$@ = "$self->{_mode} cannot use method start()";
+		$@ = "$self->{_mode} cannot use method do_one_loop()";
 		return undef;
 		}
 	$self->{_lastglobalkeygentime} ||= time;

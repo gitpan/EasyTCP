@@ -1,6 +1,7 @@
+#
+# $Header: /cvsroot/Net::EasyTCP/Makefile.PL,v 1.4 2002/11/03 09:06:18 mina Exp $
+#
 use ExtUtils::MakeMaker;
-# See lib/ExtUtils/MakeMaker.pm for details of how to influence
-# the contents of the Makefile that is written.
 WriteMakefile(
 	'NAME'	=> 'Net::EasyTCP',
 	'VERSION_FROM' => 'EasyTCP.pm', # finds $VERSION

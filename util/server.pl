@@ -1,5 +1,9 @@
 #!/usr/local/bin/perl
 
+#
+# $Header: /cvsroot/Net::EasyTCP/util/server.pl,v 1.4 2002/11/03 09:06:18 mina Exp $
+#
+
 use Net::EasyTCP;
 $|=1;
 
