@@ -82,9 +82,25 @@ require AutoLoader;
 # names by default without a very good reason. Use EXPORT_OK instead.
 # Do not simply export all your public functions/methods/constants.
 @EXPORT = qw();
-$VERSION = '0.10';
+$VERSION = '0.11';
 
 # Preloaded methods go here.
+
+#
+# This generates a global keypair and stores it globally
+# Takes the name of a module, returns true or false
+#
+sub _generateglobalkeypair() {
+	my $module = shift || return undef;
+	foreach (keys %_ENCRYPT_AVAILABLE) {
+		if ($_ ne "_order" && $_ENCRYPT_AVAILABLE{$_}{name} eq $module) {
+			($_ENCRYPT_AVAILABLE{$_}{localpublickey}, $_ENCRYPT_AVAILABLE{$_}{localprivatekey}) = ();
+			($_ENCRYPT_AVAILABLE{$_}{localpublickey}, $_ENCRYPT_AVAILABLE{$_}{localprivatekey}) = &_genkey($_) or return undef;
+			return 1;
+			}
+		}
+	return undef;
+	}
 
 #
 # This takes any string and returns it in ascii format
@@ -140,6 +156,8 @@ sub _callback() {
 # This takes in an encryption key id and generates a key(pair) and returns it/them according to the type
 # of encryption specified
 # Returns undef on error
+# If there are already a keypair for the specified module stored globally, it will return that instead of
+# generating new ones.
 #
 sub _genkey() {
 	my $modulekey = shift;
@@ -148,21 +166,19 @@ sub _genkey() {
 	my $key2 = undef;
 	my $temp;
 	$@ = undef;
-	if ($module eq 'Crypt::RSA') {
-		if ($_ENCRYPT_AVAILABLE{$modulekey}{localpublickey} && $_ENCRYPT_AVAILABLE{$modulekey}{localprivatekey}) {
-			$key1 = $_ENCRYPT_AVAILABLE{$modulekey}{localpublickey};
-			$key2 = $_ENCRYPT_AVAILABLE{$modulekey}{localprivatekey};
-			}
-		else {
-			$temp = Crypt::RSA->new();
-			($key1, $key2) = $temp->keygen (
-				Size		=>	512,
-				Verbosity	=>	0,
-				)
-				or $@ = $temp->errstr();
-			if ($key1) {
-				$key1 = &_bin2asc(nfreeze($key1));
-				}
+	if ($_ENCRYPT_AVAILABLE{$modulekey}{localpublickey} && $_ENCRYPT_AVAILABLE{$modulekey}{localprivatekey}) {
+		$key1 = $_ENCRYPT_AVAILABLE{$modulekey}{localpublickey};
+		$key2 = $_ENCRYPT_AVAILABLE{$modulekey}{localprivatekey};
+		}
+	elsif ($module eq 'Crypt::RSA') {
+		$temp = Crypt::RSA->new();
+		($key1, $key2) = $temp->keygen (
+			Size		=>	512,
+			Verbosity	=>	0,
+			)
+			or $@ = $temp->errstr();
+		if ($key1) {
+			$key1 = &_bin2asc(nfreeze($key1));
 			}
 		}
 	elsif ($module eq 'Crypt::Rijndael') {
@@ -351,20 +367,20 @@ sub _client_negotiate() {
 		$evl = undef;
 		$data = undef;
 		if (!$command) {
-			$@ = "Error negotiating (2)";
+			$@ = "Error negotiating with server. No command received.";
 			return undef;
 			}
 		if ($command eq "PF") {
 			$@ = "Server rejected supplied password";
 			return undef;
 			}
-		elsif ($command eq "CVF") {
+		elsif ($command eq "CVF" && !$client->{_donotcheckversion}) {
 			$temp = $_COMPRESS_AVAILABLE{$client->{_compress}}{name};
 			$version = $_COMPRESS_AVAILABLE{$client->{_compress}}{version};
 			$@ = "Compression version mismatch for $temp : Local version $version remote version $P[0] : Upgrade both to same version or run the server in 'donotcompress' mode";
 			return undef;
 			}
-		elsif ($command eq "EVF") {
+		elsif ($command eq "EVF" && !$client->{_donotcheckversion}) {
 			$temp = $_ENCRYPT_AVAILABLE{$client->{_encrypt}}{name};
 			$version = $_ENCRYPT_AVAILABLE{$client->{_encrypt}}{version};
 			$@ = "Encryption version mismatch for $temp : Local version $version remote version $P[0] : Upgrade both to same version or run the server in 'donotencrypt' mode";
@@ -433,7 +449,7 @@ sub _client_negotiate() {
 			$data = "NO";
 			}
 		if (defined $data && !&_send($client, $data, 0)) {
-			$@ = "Error negotiating (3) : $@";
+			$@ = "Error negotiating with server. Could not send : $@";
 			return undef;
 			}
 		#
@@ -459,7 +475,7 @@ sub _client_negotiate() {
 # Although this is much more complicated, it needs to be done so
 # the server does not block when a client is negotiating with it
 #
-# Expects a client object, and an (optional) reply
+# Expects a client object
 #
 sub _serverclient_negotiate() {
 	my $client = shift;
@@ -481,7 +497,7 @@ sub _serverclient_negotiate() {
 		@P = split(/\x00/, $reply);
 		$command = shift(@P);
 		if (!$command) {
-			$@ = "Error negotiating (3): $@";
+			$@ = "Error negotiating. No command received from client : $@";
 			return undef;
 			}
 		$client->{_negotiating_lastevent} = "received";
@@ -559,21 +575,16 @@ sub _serverclient_negotiate_sendnext() {
 	if (!defined $client->{_negotiating_commands}) {
 		# Let's initialize the sequence of commands we send
 		$data = "\r\n\r\n\r\n\r\n\r\n\r\n\r\n\r\n";
-		$data .= "::  HELLO  ::  $class VERSION $VERSION  ::  SERVER READY  ::\r\n\r\n::  $client->{_welcome}  ::";
-		$data .= "\r\n";
+		$data .= "-----BEGIN CLEARTEXT WELCOME MESSAGE-----\r\n";
+		$data .= "::\r\n";
+		$data .= "::  HELLO  ::  $class VERSION $VERSION  ::  SERVER READY  ::\r\n";
+		$data .= "::\r\n";
+		$data .= "::  $client->{_welcome}\r\n";
+		$data .= "::\r\n";
+		$data .= "-----END CLEARTEXT WELCOME MESSAGE-----\r\n";
 		push (@{$client->{_negotiating_commands}}, $data);
 		$data = "VE\x00$VERSION";
 		push (@{$client->{_negotiating_commands}}, $data);
-		if (defined $client->{_password}) {
-			if (!exists $client->{_cryptsalt}) {
-				$client->{_cryptsalt} = "";
-				for (1..2) {
-					$client->{_cryptsalt} .= chr(int(rand(93))+33);
-					}
-				}
-			$data = "CS\x00" . &_munge($client->{_cryptsalt});
-			push (@{$client->{_negotiating_commands}}, $data);
-			}
 		if (!$client->{_donotencrypt}) {
 			$data = "EA";
 			foreach (@{$_ENCRYPT_AVAILABLE{_order}}) {
@@ -588,6 +599,16 @@ sub _serverclient_negotiate_sendnext() {
 				}
 			push (@{$client->{_negotiating_commands}}, $data);
 			}
+		if (defined $client->{_password}) {
+			if (!exists $client->{_cryptsalt}) {
+				$client->{_cryptsalt} = "";
+				for (1..2) {
+					$client->{_cryptsalt} .= chr(int(rand(93))+33);
+					}
+				}
+			$data = "CS\x00" . &_munge($client->{_cryptsalt});
+			push (@{$client->{_negotiating_commands}}, $data);
+			}
 		push (@{$client->{_negotiating_commands}}, "EN");
 		}
 
@@ -596,7 +617,7 @@ sub _serverclient_negotiate_sendnext() {
 		return undef;
 		}
 	if (!&_send($client, $data, 0)) {
-		$@ = "Error negotiating (1) : $@";
+		$@ = "Error negotiating with client. Could not send : $@";
 		return undef;
 		}
 	$client->{_negotiating_lastevent} = "sent";
@@ -609,11 +630,18 @@ sub _serverclient_negotiate_sendnext() {
 #
 sub _parseinternaldata() {
 	my $client = shift;
-	my $data = $client->data(1);
-	my @P = split(/\x00/, $data);
-	my $command = shift(@P) || return undef;;
-	my $temp;
-	return 1;
+	my $data;
+	if ($client->{_mode} eq "serverclient" && $client->{_negotiating}) {
+		# The serverclient is still negotiating
+		if (&_serverclient_negotiate($client) ) {
+			# Negotiation's complete and successful
+			&_callback($client, "connect");
+			}
+		}
+	else {
+		# It's normal internal data
+		$data = $client->data(1);
+		}
 	}
 
 
@@ -654,6 +682,8 @@ sub _new_client() {
 	my $sock;
 	my $self = {};
 	my $temp;
+	my $remoteip;
+	my $remoteport;
 	$class =~ s/=.*//g;
 	if (!$para{_sock}) {
 		if (!$para{host}) {
@@ -683,10 +713,15 @@ sub _new_client() {
 		return undef;
 		}
 	$sock->autoflush(1);
+	$temp = getpeername($sock) || (($@ = "Error getting peername") && return undef);
+	($remoteport, $remoteip) = sockaddr_in($temp) or (($@ = "Error getting socket address") && return undef);
+	$self->{_remoteip} = inet_ntoa($remoteip) || (($@ = "Error determing remote IP") && return undef);
+	$self->{_remoteport} = $remoteport;
 	$self->{_sock} = $sock;
 	$self->{_password} = $para{password};
 	$self->{_donotcompress} = ($para{donotcompress}) ? 1 : 0;
 	$self->{_donotencrypt} = ($para{donotencrypt}) ? 1 : 0;
+	$self->{_donotcheckversion} = ($para{donotcheckversion}) ? 1 : 0;
 	$self->{_data} = [];
 	bless ($self, $class);
 	if ($self->{_mode} eq "client" && !&_client_negotiate($self)) {
@@ -731,13 +766,12 @@ sub _new_server() {
 	$self->{_donotencrypt} = ($para{donotencrypt}) ? 1 : 0;
 	$self->{_clients} = {};
 	#
-	# To avoid key-gen delays while running, let's create RSA keypairs right now
+	# To avoid key-gen delays while running, let's create global RSA keypairs right now
 	#
 	if (!$self->{_donotencrypt}) {
-		foreach (keys %_ENCRYPT_AVAILABLE) {
-			if ($_ ne "_order" && $_ENCRYPT_AVAILABLE{$_}{name} eq 'Crypt::RSA') {
-				($_ENCRYPT_AVAILABLE{$_}{localpublickey}, $_ENCRYPT_AVAILABLE{$_}{localprivatekey}) = &_genkey($_) or return undef;
-				}
+		if (!&_generateglobalkeypair('Crypt::RSA')) {
+			$@ = "Could not generate global Crypt::RSA keypairs. $@";
+			return undef;
 			}
 		}
 	bless($self, $class);
@@ -1020,6 +1054,11 @@ new() expects to be passed a hash. The following keys are accepted:
 
 =over 4
 
+=item donotcheckversion
+
+Set to 1 to force a client to continue connecting even if an encryption/compression module version mismatch is detected. (Highly unrecommended, upgrade modules instead)
+(Optional and acceptable when mode is "client")
+
 =item donotcompress
 
 Set to 1 to forcefully disable L<compression|COMPRESSION AND ENCRYPTION> even if the appropriate module(s) are found.
@@ -1180,6 +1219,8 @@ Encryption will be automatically enabled if one (or more) of: L<Crypt::RSA|Crypt
 
 Preference to the compression/encryption method used is determind by availablity checking following the order in which they are presented in the above lists.
 
+Note that during the negotiation upon connection, the server and client will communicate the version of the selected encryption/compression modules.  If a version mismatch is found, the client will report a connection failure stating the reason (module version mismatch).  This behavior was necessary since it was observed that different versions of the same module could produce incompatible output.  If this is encountered, it is strongly recommended you upgrade the module in question to the same version on both ends.  However, if you wish to forcefully connect overlooking a version mismatch (risking instability/random problems/data corruption) you may supply the "donotcheckversion" key to the new() constructor of the client object.
+
 To find out which module(s) have been negotiated for use you can use the compression() and encryption() methods.
 
 * Note that for this class's purposes, L<Crypt::CBC|Crypt::CBC> is a requirement to use any of the encryption modules with a * next to it's name in the above list.  So eventhough you may have these modules installed on both the client and the server, they will not be used unless L<Crypt::CBC|Crypt::CBC> is also installed on both ends.
@@ -1319,6 +1360,7 @@ sub start() {
 	my $result;
 	my $error;
 	my $negotiatingtimeout = 45;
+	my $lastglobalkeygentime;
 	$_SELECTOR = new IO::Select;
 	if ($self->{_mode} ne "server") {
 		$@ = "$self->{_mode} cannot use method start()";
@@ -1327,6 +1369,7 @@ sub start() {
 	$self->{_running} = 1;
 	$self->{_requeststop} = 0;
 	$_SELECTOR->add($self->{_sock});
+	$lastglobalkeygentime = time;
 MLOOP:	while (!$self->{_requeststop}) {
 		@ready = $_SELECTOR->can_read(1);
 		foreach (@ready) {
@@ -1367,14 +1410,8 @@ MLOOP:	while (!$self->{_requeststop}) {
 					# Client sent us some good data (not necessarily a full packet)
 					$serverclient->{_databuffer} .= $tempdata;
 					while (defined ($realdata = &_extractdata($serverclient)) ) {
-						if (!$realdata && $serverclient->{_negotiating}) {
-							# We found something, but it's negotiating data
-							if (&_serverclient_negotiate($serverclient) ) {
-								&_callback($serverclient, "connect");
-								}
-							}
-						elsif (!$realdata) {
-							# It's just internal protocol data
+						if (!$realdata) {
+							# It's internal protocol data
 							&_parseinternaldata($serverclient);
 							}
 						else {
@@ -1398,6 +1435,15 @@ MLOOP:	while (!$self->{_requeststop}) {
 					delete $self->{_clients}->{$_};
 					}
 				}
+			}
+		# Now we re-generate the RSA keys if it's been over an hour
+		#
+		if (!$self->{_donotencrypt} && ((time-$lastglobalkeygentime) >= 3600)) {
+			if (!&_generateglobalkeypair('Crypt::RSA')) {
+				$error = "Could not generate global Crypt::RSA keypairs. $@";
+				last MLOOP;
+				}
+			$lastglobalkeygentime = time;
 			}
 		}
 	# If we reach here the server's been stopped
@@ -1458,7 +1504,7 @@ sub serial() {
 #
 sub data() {
 	my $self = shift;
-	my $returnlatest;
+	my $returnlatest = shift;
 	my $data;
 	if ($self->{_mode} ne "client" && $self->{_mode} ne "serverclient") {
 		$@ = "$self->{_mode} cannot use method data()";
@@ -1470,12 +1516,7 @@ sub data() {
 	else {
 		$data = shift ( @{$self->{_data}} );
 		}
-	if (defined $data) {
-		return $data;
-		}
-	else {
-		return undef;
-		}
+	return $data;
 	}
 
 #
@@ -1609,7 +1650,7 @@ sub encryption() {
 	if ($self->{_donotencrypt} || !$modulekey) {
 		return undef;
 		}
-	return $_ENCRYPT_AVAILABLE{$modulekey}{name} || undef;
+	return $_ENCRYPT_AVAILABLE{$modulekey}{name} || "Unknown module name";
 	}
 
 
@@ -1622,7 +1663,7 @@ sub compression() {
 	if ($self->{_donotcompress} || !$modulekey) {
 		return undef;
 		}
-	return $_COMPRESS_AVAILABLE{$modulekey}{name} || undef;
+	return $_COMPRESS_AVAILABLE{$modulekey}{name} || "Unknown module name";
 	}
 
 #
@@ -1673,20 +1714,10 @@ sub clients() {
 #
 sub remoteip() {
 	my $self = shift;
-	my $sock = $self->{_sock};
 	my $temp;
 	if ($self->{_mode} ne "client" && $self->{_mode} ne "serverclient") {
 		$@ = "$self->{_mode} cannot use method remoteip()";
 		return undef;
-		}
-	if (!$sock) {
-		$@ = "Internal error, cannot determing socket attached to client object";
-		return undef;
-		}
-	if (!$self->{_remoteip}) {
-		$temp = getpeername($sock) || return undef;
-		($temp) = (sockaddr_in($temp))[1] || return undef;
-		$self->{_remoteip} = inet_ntoa($temp);
 		}
 	return $self->{_remoteip};
 	}
@@ -1696,20 +1727,10 @@ sub remoteip() {
 #
 sub remoteport() {
 	my $self = shift;
-	my $sock = $self->{_sock};
 	my $temp;
 	if ($self->{_mode} ne "client" && $self->{_mode} ne "serverclient") {
 		$@ = "$self->{_mode} cannot use method remoteport()";
 		return undef;
-		}
-	if (!$sock) {
-		$@ = "Internal error, cannot determing socket attached to client object";
-		return undef;
-		}
-	if (!$self->{_remoteport}) {
-		$temp = getpeername($sock) || return undef;
-		($temp) = (sockaddr_in($temp))[0] || return undef;
-		$self->{_remoteport} = $temp;
 		}
 	return $self->{_remoteport};
 	}

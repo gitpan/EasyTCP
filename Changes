@@ -1,5 +1,26 @@
 Revision history
 
+0.11
+	- Fixed a small issue where if a server and a client were configured to use a password, the
+	  password negotiation occurred before the encryption negotiation, which caused the password
+	  hash to be transmitted using weak internal encryption.  This has been fixed by making the
+	  password negotiation occur after encryption negotiation.  It's not really a major security
+	  issue since only a hash and not the real password was transmitted, but still.... this forces
+	  a hacker to break the encryption first before they can get the hash, which they THEN have
+	  to brute-force break....
+	- As requested by a CPAN tester, added numbers to the output of 'make test'. Note that due to
+	  the fact that make test fork()s, the numbers may not be consequtive.
+	- The server will generate a new RSA keypair every hour, this substantially increases
+	  security.
+	- Implemented support of "donotcheckversion" which would allow the client to continue
+	  negotiating even if an encryption/compression module version mismatch is encountered.
+	  Before you use this feature read the POD/man Net::EasyTCP documentation to understand the
+	  consequences.
+	- The clear-text welcome message displayed by the server is now more organized.
+	- Clarified some vague error messages that were sometimes returned if negotiations failed.
+	- Minor internal re-organizations.
+
+
 0.10
 	- Bugfixes release.
 	- A bug was introduced in version 0.09 where if a client did not have any encryption modules
