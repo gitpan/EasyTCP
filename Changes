@@ -1,5 +1,9 @@
 Revision history
 
+0.12	- Fixed a bug where if Crypt::RSA was not installed the test suite would fail.
+	- The welcome message viewable via telnet-ting into the server is now formatted nicer.
+
+
 0.11
 	- Fixed a small issue where if a server and a client were configured to use a password, the
 	  password negotiation occurred before the encryption negotiation, which caused the password

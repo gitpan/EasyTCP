@@ -82,7 +82,7 @@ require AutoLoader;
 # names by default without a very good reason. Use EXPORT_OK instead.
 # Do not simply export all your public functions/methods/constants.
 @EXPORT = qw();
-$VERSION = '0.11';
+$VERSION = '0.12';
 
 # Preloaded methods go here.
 
@@ -96,10 +96,10 @@ sub _generateglobalkeypair() {
 		if ($_ ne "_order" && $_ENCRYPT_AVAILABLE{$_}{name} eq $module) {
 			($_ENCRYPT_AVAILABLE{$_}{localpublickey}, $_ENCRYPT_AVAILABLE{$_}{localprivatekey}) = ();
 			($_ENCRYPT_AVAILABLE{$_}{localpublickey}, $_ENCRYPT_AVAILABLE{$_}{localprivatekey}) = &_genkey($_) or return undef;
-			return 1;
+			last;
 			}
 		}
-	return undef;
+	return 1;
 	}
 
 #
@@ -579,8 +579,10 @@ sub _serverclient_negotiate_sendnext() {
 		$data .= "::\r\n";
 		$data .= "::  HELLO  ::  $class VERSION $VERSION  ::  SERVER READY  ::\r\n";
 		$data .= "::\r\n";
-		$data .= "::  $client->{_welcome}\r\n";
-		$data .= "::\r\n";
+		if ($client->{_welcome}) {
+			$data .= "::  $client->{_welcome}\r\n";
+			$data .= "::\r\n";
+			}
 		$data .= "-----END CLEARTEXT WELCOME MESSAGE-----\r\n";
 		push (@{$client->{_negotiating_commands}}, $data);
 		$data = "VE\x00$VERSION";
