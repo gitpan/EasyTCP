@@ -1,7 +1,24 @@
-$Header: /cvsroot/Net::EasyTCP/Changes,v 1.29 2003/02/26 22:07:54 mina Exp $
+$Header: /cvsroot/Net::EasyTCP/Changes,v 1.31 2003/03/02 05:37:56 mina Exp $
 
 
 REVISION HISTORY:
+
+0.19
+	- Fixed a bug in the testing script that caused the test to fail if you already had a
+	  TCP/IP daemon on the machine listening on port 2345
+	- Increased the timeout for a client negotiationg with a server to avoid a race
+	  condition of a server and a client launching shortly after each other (as in the
+	  case of the test script) while the server takes a bit of time to prepare itself
+	  before it's ready for negotiation.
+	- Implemented various minor potential bugfixes and fixed some strict/warning error
+	  messages thanks to Michael Krause (VKrauseM@web.de)'s patches
+	- Implemented a "timeout" option that you can supply to the new() constructor
+	  while creating a new client object, which you can use to override the default
+	  30 second timeout to establish a TCP/IP socket with the server.  Thanks to Michael
+	  Krause (VKrauseM@web.de)
+	- Minor code cleanup, with slightly faster encryption key generation time compared
+	  to version 0.18
+
 
 0.18
 	- Fixed a bug that caused clients on certain OSes (Noticably SunOS 5.6) to randomly fail

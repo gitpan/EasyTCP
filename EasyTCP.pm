@@ -1,7 +1,7 @@
 package Net::EasyTCP;
 
 #
-# $Header: /cvsroot/Net::EasyTCP/EasyTCP.pm,v 1.101 2003/02/26 21:55:55 mina Exp $
+# $Header: /cvsroot/Net::EasyTCP/EasyTCP.pm,v 1.107 2003/03/02 05:37:56 mina Exp $
 #
 
 use strict;
@@ -128,7 +128,7 @@ require AutoLoader;
 # names by default without a very good reason. Use EXPORT_OK instead.
 # Do not simply export all your public functions/methods/constants.
 @EXPORT  = qw();
-$VERSION = '0.18';
+$VERSION = '0.19';
 
 # Preloaded methods go here.
 
@@ -176,7 +176,8 @@ sub _asc2bin() {
 #
 sub _munge() {
 	my $client = shift || return undef;
-	my $data   = shift;
+	my $data = shift;
+	my ($c, $t);
 
 	#
 	# Munge's tricky because is existed on and off in different versions
@@ -184,8 +185,6 @@ sub _munge() {
 	if (defined $data && ($client->{_version} == 0.07 || $client->{_version} == 0.08 || $client->{_version} >= 0.15)) {
 
 		# Peer supports munge
-		my $c;
-		my $t;
 		for (0 .. length($data) - 1) {
 			$c = substr($data, $_, 1);
 			$t = vec($c, 0, 4);
@@ -452,13 +451,25 @@ sub _decrypt() {
 #
 # This sub returns a random string
 # Expects an integer (length)
+# Accepts optional boolean that defines whether string should be made up of letters only or not
 #
 sub _genrandstring() {
-	my $l = shift;
+	my $l           = shift;
+	my $lettersonly = shift;
+	my ($minord, $maxord);
 	my $key;
 	my $avoid;
 	my $module;
 	my $version;
+
+	if ($lettersonly) {
+		$minord = 97;
+		$maxord = 122;
+	}
+	else {
+		$minord = 33;
+		$maxord = 126;
+	}
 
 	#
 	# First, we try one of the fancy randomness modules possibly in %_MISC_AVAILABLE
@@ -471,7 +482,7 @@ sub _genrandstring() {
 		# Note that Crypt::Random has the makerandom_octet function ONLY in 0.34 and higher
 		#
 		if ($module eq "Crypt::Random" && $version >= 0.34) {
-			for (0 .. 33, 127 .. 255) {
+			for (0 .. $minord - 1, $maxord + 1 .. 255) {
 				$avoid .= chr($_);
 			}
 			$key = Crypt::Random::makerandom_octet(
@@ -487,7 +498,7 @@ sub _genrandstring() {
 	# the string
 	#
 	for (1 .. $l) {
-		$key .= chr(int(rand(93)) + 33);
+		$key .= chr(int(rand($maxord - $minord)) + $minord);
 	}
 	return $key;
 }
@@ -499,7 +510,7 @@ sub _genrandstring() {
 sub _client_negotiate() {
 	my $client = shift;
 	my $reply;
-	my $timeout = 45;
+	my $timeout = 90;
 	my @P;
 	my $command;
 	my $data;
@@ -675,7 +686,7 @@ sub _client_negotiate() {
 			}
 		}
 	}
-	$@ = "Client timed out while negotiating with server: $@";
+	$@ = "Client timed out while negotiating with server [" . (time - $starttime) . "/$timeout] : $@";
 	return undef;
 }
 
@@ -860,12 +871,7 @@ sub _serverclient_negotiate_sendnext() {
 		}
 		if (defined $client->{_password}) {
 			if (!exists $client->{_cryptsalt}) {
-				while (($client->{_cryptsalt} = &_genrandstring(2)) !~ /^[a-z]{2}$/i) {
-
-					# Keep looping until we get a cryptsalt that's 2 LETTERS (no special symbols)
-					# this is needed since I noticed that on some platforms such as old SunOSes, crypt() given
-					# a salt with non-letters will produce an invalid hash, cuasing the pas sauthentication to fail
-				}
+				$client->{_cryptsalt} = &_genrandstring(2, 1);
 			}
 			$data = "CS\x00" . $client->{_cryptsalt};
 			push (@{ $client->{_negotiating_commands} }, $data);
@@ -961,7 +967,7 @@ sub _new_client() {
 			PeerAddr => $para{host},
 			PeerPort => $para{port},
 			Proto    => 'tcp',
-			Timeout  => 30,
+			Timeout  => $para{timeout} || 30,
 		);
 		$self->{_mode}        = "client";
 		$self->{_negotiating} = time;
@@ -1077,11 +1083,11 @@ sub _new_server() {
 #
 sub _extractdata() {
 	my $client = shift;
-	my $key = (exists $client->{_databuffer}) ? substr($client->{_databuffer}, 0, 2) : '';
 	my ($alwayson, $complexstructure, $realdata, $reserved, $encrypted, $compressed, $lenlen);
 	my $lendata;
 	my $len;
 	my $data;
+	my $key = (defined $client->{_databuffer}) ? substr($client->{_databuffer}, 0, 2) : '';
 	if (length($key) != 2) {
 		return undef;
 	}
@@ -1131,6 +1137,7 @@ sub _extractdata() {
 # Returns 1 for success, undef on failure
 #
 sub _send() {
+	local $SIG{'PIPE'} = 'IGNORE';
 	my $client   = shift;
 	my $data     = shift;
 	my $realdata = shift;
@@ -1145,6 +1152,7 @@ sub _send() {
 	my $packet;
 	my $packetsize = 4096;
 	my $temp;
+	my $bytes_written;
 	my $complexstructure = ref($data);
 
 	if (!$sock) {
@@ -1202,7 +1210,12 @@ sub _send() {
 	while (length($finaldata)) {
 		$packet = substr($finaldata, 0, $packetsize);
 		substr($finaldata, 0, $packetsize) = '';
-		$temp += syswrite($sock, $packet, length($packet));
+		$bytes_written = syswrite($sock, $packet, length($packet));
+		if (!defined $bytes_written) {
+			$@ = "Error writing to socket while sending data: $!";
+			return undef;
+		}
+		$temp += $bytes_written;
 	}
 	if ($temp != $len) {
 		$@ = "Error sending data: $!";
@@ -1395,6 +1408,10 @@ Also, when encryption using a symmetric encryption module is used, this password
 
 Must be set to the port the client connects to (if mode is "client") or to the port to listen to (if mode is "server"). If you're writing a client+server pair, they must both use the same port number.
 (Mandatory)
+
+=item timeout
+
+Set to an integer (seconds) that a client attempting to establish a TCP/IP connection to a server will timeout after.  If not supplied, the default is 30 seconds. (Optional and acceptable only when mode is "client")
 
 =item welcome
 
@@ -2003,16 +2020,16 @@ sub receive() {
 			}
 		}
 		$result = sysread($self->{_sock}, $temp, 4096);
-		if ($result == 0) {
-
-			# Socket closed
-			$@ = "Socket closed when attempted reading";
-			return undef;
-		}
-		elsif (!defined $result) {
+		if (!defined $result) {
 
 			# Error in socket
 			$@ = "Error reading from socket: $!";
+			return undef;
+		}
+		elsif ($result == 0) {
+
+			# Socket closed
+			$@ = "Socket closed when attempted reading";
 			return undef;
 		}
 		else {
@@ -2073,7 +2090,7 @@ sub close() {
 		# If the server selector reads this, let's make it not...
 		$self->{_selector}->remove($self->{_sock});
 	}
-	$self->{_sock}->close();
+	$self->{_sock}->close() if defined $self->{_sock};
 	$self->{_sock}       = undef;
 	$self->{_data}       = [];
 	$self->{_databuffer} = undef;
