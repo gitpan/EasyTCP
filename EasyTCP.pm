@@ -1,7 +1,7 @@
 package Net::EasyTCP;
 
 #
-# $Header: /cvsroot/Net::EasyTCP/EasyTCP.pm,v 1.130 2003/05/20 01:09:48 mina Exp $
+# $Header: /cvsroot/Net::EasyTCP/EasyTCP.pm,v 1.133 2003/07/15 01:00:57 mina Exp $
 #
 
 use strict;
@@ -58,7 +58,7 @@ BEGIN {
 	#
 	# Let's reset some variables:
 	#
-	$hasCBC = 0;
+	$hasCBC                      = 0;
 	$_COMPRESS_AVAILABLE{_order} = [];
 	$_ENCRYPT_AVAILABLE{_order}  = [];
 	$_MISC_AVAILABLE{_order}     = [];
@@ -128,7 +128,7 @@ require AutoLoader;
 # names by default without a very good reason. Use EXPORT_OK instead.
 # Do not simply export all your public functions/methods/constants.
 @EXPORT  = qw();
-$VERSION = '0.23';
+$VERSION = '0.24';
 
 # Preloaded methods go here.
 
@@ -731,7 +731,7 @@ sub _client_negotiate {
 		if (!defined $reply) {
 			last;
 		}
-		@P = split (/\x00/, $reply);
+		@P       = split (/\x00/, $reply);
 		$command = shift (@P);
 		$evl     = undef;
 		$data    = undef;
@@ -755,7 +755,7 @@ sub _client_negotiate {
 			#
 			$client->{_compatabilityscalar}    = _asc2bin($P[0]);
 			$client->{_compatabilityreference} = _gencompatabilityreference($client->{_compatabilityscalar});
-			$data = "COS\x00" . $P[0];
+			$data                              = "COS\x00" . $P[0];
 		}
 		elsif ($command eq "COF") {
 
@@ -1353,6 +1353,7 @@ sub _serverclient_negotiate_sendnext {
 	my $class = $client;
 	my ($temppublic, $tempprivate, $tempscalar);
 	my $key;
+	my @available;
 	$class =~ s/=.*//g;
 
 	if (!defined $client->{_negotiating_commands}) {
@@ -1380,6 +1381,8 @@ sub _serverclient_negotiate_sendnext {
 
 		if (!$client->{_donotencrypt}) {
 
+			@available = ();
+
 			#
 			# New method
 			#
@@ -1392,8 +1395,9 @@ sub _serverclient_negotiate_sendnext {
 				($temppublic, $tempprivate) = _genkey($key, 1) or next;
 				$client->{_remotepublickey} = $temppublic;
 				$client->{_encrypt}         = $key;
-				$tempscalar = $client->{_compatabilityscalar};
+				$tempscalar                 = $client->{_compatabilityscalar};
 				if (_encrypt($client, \$tempscalar)) {
+					push (@available, $key);
 					$data = "EM\x00$key\x00" . $_ENCRYPT_AVAILABLE{$key}{version} . "\x00" . _bin2asc(ref($tempprivate) ? nfreeze $tempprivate : $tempprivate) . "\x00" . _bin2asc($tempscalar);
 					push (@{ $client->{_negotiating_commands} }, $data);
 				}
@@ -1404,13 +1408,12 @@ sub _serverclient_negotiate_sendnext {
 			#
 			# Old method
 			#
-			$data = "EA";
-			foreach (@{ $_ENCRYPT_AVAILABLE{_order} }) {
-				$data .= "\x00$_";
-			}
+			$data = "EA" . join ("", map { "\x00$_" } @available);
 			push (@{ $client->{_negotiating_commands} }, $data);
 		}
 		if (!$client->{_donotcompress}) {
+
+			@available = ();
 
 			#
 			# New method
@@ -1424,6 +1427,7 @@ sub _serverclient_negotiate_sendnext {
 				$client->{_compress} = $_;
 				$tempscalar = $client->{_compatabilityscalar};
 				if (_compress($client, \$tempscalar)) {
+					push (@available, $key);
 					$data = "CM\x00$_\x00" . $_COMPRESS_AVAILABLE{$_}{version} . "\x00" . _bin2asc($tempscalar);
 					push (@{ $client->{_negotiating_commands} }, $data);
 				}
@@ -1433,10 +1437,7 @@ sub _serverclient_negotiate_sendnext {
 			#
 			# Old method
 			#
-			$data = "CA";
-			foreach (@{ $_COMPRESS_AVAILABLE{_order} }) {
-				$data .= "\x00$_";
-			}
+			$data = "CA" . join ("", map { "\x00$_" } @available);
 			push (@{ $client->{_negotiating_commands} }, $data);
 		}
 		if (defined $client->{_password}) {
@@ -1552,7 +1553,7 @@ sub _new_client {
 		$self->{_negotiating} = time;
 	}
 	else {
-		$sock = $para{_sock};
+		$sock                   = $para{_sock};
 		$self->{_mode}          = "serverclient";
 		$self->{_negotiating}   = time;
 		$self->{_authenticated} = 0;
@@ -1865,7 +1866,9 @@ sub _send {
 1;
 __END__
 
-# Below is the stub of documentation for your module. You better edit it!
+#
+# POD DOCUMENTATION:
+#
 
 =head1 NAME
 
@@ -1909,12 +1912,19 @@ Transparent compression
 
 	use Net::EasyTCP;
 
+	#
+	# Create the server object
+	#
 	$server = new Net::EasyTCP(
 		mode            =>      "server",
 		port            =>      2345,
 	)
 	|| die "ERROR CREATING SERVER: $@\n";
 
+	#
+	# Tell it about the callbacks to call
+	# on known events
+	#
 	$server->setcallback(
 		data            =>      \&gotdata,
 		connect         =>      \&connected,
@@ -1922,9 +1932,15 @@ Transparent compression
 	)
 	|| die "ERROR SETTING CALLBACKS: $@\n";
 
+	#
+	# Start the server
+	#
 	$server->start() || die "ERROR STARTING SERVER: $@\n";
 
-	sub gotdata() {
+	#
+	# This sub gets called when a client sends us data
+	#
+	sub gotdata {
 		my $client = shift;
 		my $serial = $client->serial();
 		my $data = $client->data();
@@ -1938,13 +1954,19 @@ Transparent compression
 		}
 	}
 
-	sub connected() {
+	#
+	# This sub gets called when a new client connects
+	#
+	sub connected {
 		my $client = shift;
 		my $serial = $client->serial();
 		print "Client $serial just connected\n";
 	}
 
-	sub disconnected() {
+	#
+	# This sub gets called when an existing client disconnects
+	#
+	sub disconnected {
 		my $client = shift;
 		my $serial = $client->serial();
 		print "Client $serial just disconnected\n";
@@ -1954,6 +1976,9 @@ Transparent compression
 
 	use Net::EasyTCP;
 
+	#
+	# Create a new client and connect to a server
+	#
 	$client = new Net::EasyTCP(
 		mode            =>      "client",
 		host            =>      'localhost',
@@ -1961,11 +1986,15 @@ Transparent compression
 	)
 	|| die "ERROR CREATING CLIENT: $@\n";
 
-	#Send and receive a simple string
+	#
+	# Send and receive a simple string
+	#
 	$client->send("HELLO THERE") || die "ERROR SENDING: $@\n";
 	$reply = $client->receive() || die "ERROR RECEIVING: $@\n";
 
-	#Send and receive complex objects/strings/arrays/hashes by reference
+	#
+	# Send and receive complex objects/strings/arrays/hashes by reference
+	#
 	%hash = ("to be or" => "not to be" , "just another" => "perl hacker");
 	$client->send(\%hash) || die "ERROR SENDING: $@\n";
 	$reply = $client->receive() || die "ERROR RECEIVING: $@\n";
@@ -1973,7 +2002,9 @@ Transparent compression
 		print "Received key: $_ = $reply->{$_}\n";
 	}
 
-	#Send and receive large binary data
+	#
+	# Send and receive large binary data
+	#
 	for (1..4096) {
 		for (0..255) {
 			$largedata .= chr($_);
@@ -1982,6 +2013,9 @@ Transparent compression
 	$client->send($largedata) || die "ERROR SENDING: $@\n";
 	$reply = $client->receive() || die "ERROR RECEIVING: $@\n";
 
+	#
+	# Cleanly disconnect from the server
+	#
 	$client->close();
 
 =back
@@ -2071,6 +2105,8 @@ If someone uses an interactive telnet program to telnet to the server, they will
 
 B<[C] = Available to objects created as mode "client">
 
+B<[H] = Available to "hybrid" client objects, as in "the server-side client objects created when a new client connects". These are the objects passed to your server's callbacks.  Such hybrid clients behave almost exactly like a normal "client" object you create yourself, except for a slight difference in the available methods to retrieve data.>
+
 B<[S] = Available to objects created as mode "server">
 
 =over 4
@@ -2091,15 +2127,15 @@ B<[S]> Returns all the clients currently connected to the server.  If called in 
 
 =item close()
 
-B<[C]> Instructs a client object to close it's connection with a server.
+B<[C][H]> Instructs a client object to close it's connection with a server.
 
 =item compression()
 
-B<[C]> Returns the name of the module used as the compression module for this connection, undef if no compression occurs.
+B<[C][H]> Returns the name of the module used as the compression module for this connection, undef if no compression occurs.
 
 =item data()
 
-B<[C]> Retrieves the previously-retrieved data associated with a client object.  This method is typically used from inside the callback sub associated with the "data" event, since the callback sub is passed nothing more than a client object.
+B<[H]> Retrieves the previously-retrieved data associated with a hybrid client object.  This method is typically used from inside the callback sub associated with the "data" event, since the callback sub is passed nothing more than a client object.
 
 =item deleteclientip(@array)
 
@@ -2117,11 +2153,11 @@ B<[S]> Instructs a server object to "do one loop" and return ASAP.  This method 
 
 =item encryption()
 
-B<[C]> Returns the name of the module used as the encryption module for this connection, undef if no encryption occurs.
+B<[C][H]> Returns the name of the module used as the encryption module for this connection, undef if no encryption occurs.
 
 =item mode()
 
-B<[C][S]> Identifies the mode of the object.  Returns either "client" or "server"
+B<[C][H][S]> Identifies the mode of the object.  Returns either "client" or "server"
 
 =item receive($timeout)
 
@@ -2131,11 +2167,11 @@ It accepts an optional parameter, a timeout value in seconds.  If none is suppli
 
 =item remoteip()
 
-B<[C]> Returns the IP address of the host on the other end of the connection.
+B<[C][H]> Returns the IP address of the host on the other end of the connection.
 
 =item remoteport()
 
-B<[C]> Returns the port of the host on the other end of the connection.
+B<[C][H]> Returns the port of the host on the other end of the connection.
 
 =item running()
 
@@ -2143,13 +2179,13 @@ B<[S]> Returns true if the server is running (started), false if it is not.
 
 =item send($data)
 
-B<[C]> Sends data to a server.  It can be used on client objects you create with the new() constructor, clients objects returned by the clients() method, or with client objects passed to your callback subs by a running server.
+B<[C][H]> Sends data to a server.  It can be used on client objects you create with the new() constructor, clients objects returned by the clients() method, or with client objects passed to your callback subs by a running server.
 
 It accepts one parameter, and that is the data to send.  The data can be a simple scalar or a reference to something more complex.
 
 =item serial()
 
-B<[C]> Retrieves the serial number of a client object,  This is a simple integer that allows your callback subs to easily differentiate between different clients.
+B<[H]> Retrieves the serial number of a client object,  This is a simple integer that allows your callback subs to easily differentiate between different clients.
 
 =item setcallback(%hash)
 
@@ -2180,7 +2216,7 @@ Whenever a callback sub is called, it is passed a single parameter, a CLIENT OBJ
 
 =item socket()
 
-B<[C]> Returns the handle of the socket (actually an L<IO::Socket|IO::Socket> object) associated with the supplied object.  This is useful if you're interested in using L<IO::Select|IO::Select> or select() and want to add a client object's socket handle to the select list.
+B<[C][H]> Returns the handle of the socket (actually an L<IO::Socket|IO::Socket> object) associated with the supplied object.  This is useful if you're interested in using L<IO::Select|IO::Select> or select() and want to add a client object's socket handle to the select list.
 
 Note that eventhough there's nothing stopping you from reading and writing directly to the socket handle you retrieve via this method, you should never do this since doing so would definately corrupt the internal protocol and may render your connection useless.  Instead you should use the send() and receive() methods.
 

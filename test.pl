@@ -1,5 +1,5 @@
 #
-# $Header: /cvsroot/Net::EasyTCP/test.pl,v 1.19 2003/02/27 22:39:45 mina Exp $
+# $Header: /cvsroot/Net::EasyTCP/test.pl,v 1.20 2003/07/11 19:23:42 mina Exp $
 #
 
 BEGIN {
@@ -20,19 +20,20 @@ print "ok 1\n";
 # Because windows is such a crappy OS that does not support (well) a fork() or alarm(), we can not possibly
 # run this test. (HOWEVER, THE MODULE STILL WORKS OK !) Sorry !
 #
-&nowindows();
 
-my $num = 1;
-my $PORT = undef;
+nowindows();
+
+my $num    = 1;
+my $PORT   = undef;
 my $SERVER = undef;
 
-&prepareserver();
+prepareserver();
 
-&startclient();
+startclient();
 
-&startserver();
+startserver();
 
-sub nowindows() {
+sub nowindows {
 	if ($^O =~ /win32/i) {
 		for (2 .. 7) {
 			print "ok $_\n";
@@ -43,7 +44,7 @@ sub nowindows() {
 	}
 }
 
-sub res() {
+sub res {
 	my $res  = shift;
 	my $desc = shift;
 	$num++;
@@ -57,40 +58,41 @@ sub res() {
 	}
 }
 
-sub prepareserver() {
+sub prepareserver {
 	my $temp;
 	my @tryports = qw(2345 65496 1025 2042);
 
 	foreach (@tryports) {
-		$PORT = $_;
+		$PORT   = $_;
 		$SERVER = new Net::EasyTCP(
 			mode     => "server",
 			port     => $PORT,
 			password => "just another perl hacker",
 		);
 		if ($SERVER) {
+
 			#
 			# We succeeded, no need to loop and try a different port
 			#
 			last;
 		}
 	}
-	&res($SERVER, "Create new server");
+	res($SERVER, "Create new server");
 
 	$temp = $SERVER->setcallback(
 		data       => \&gotdata,
 		connect    => \&connected,
 		disconnect => \&disconnected,
 	);
-	&res($temp, "Set callbacks");
+	res($temp, "Set callbacks");
 
 }
 
-sub startserver() {
+sub startserver {
 	$SERVER->start();
 }
 
-sub startclient() {
+sub startclient {
 	my $temp;
 	my $pid;
 	my $starttime;
@@ -138,23 +140,23 @@ sub startclient() {
 	exit(0);
 }
 
-sub connected() {
+sub connected {
 	my $client = shift;
 	my $temp;
-	&res($client, "Server received connection");
+	res($client, "Server received connection");
 	$temp = $client->send("SEND ME COMPLEX");
-	&res($temp, "Server send data from callback");
+	res($temp, "Server send data from callback");
 }
 
-sub gotdata() {
+sub gotdata {
 	my $client = shift;
 	my $data   = $client->data();
-	&res($data->{complex} eq "data", "Server receive complex data");
+	res($data->{complex} eq "data", "Server receive complex data");
 }
 
-sub disconnected() {
+sub disconnected {
 	my $client = shift;
-	&res($client, "Server received client disconnection");
+	res($client, "Server received client disconnection");
 	exit(0);
 }
 

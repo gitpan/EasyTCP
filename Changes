@@ -1,7 +1,18 @@
-$Header: /cvsroot/Net::EasyTCP/Changes,v 1.35 2003/05/20 01:09:48 mina Exp $
+$Header: /cvsroot/Net::EasyTCP/Changes,v 1.37 2003/07/15 01:07:11 mina Exp $
 
 
 REVISION HISTORY:
+
+
+0.24
+	- Fixed a bug that prevented servers running on machines without any encryption
+	  or compression modules installed from negotiating correctly unless donotencrypt
+	  or donotcompress was supplied to the constructor.
+	- Better comments in the SYNOPSIS examples of a server and a client
+	- A couple of small documentation changes to clarify the difference between
+	  a normal client and a hybrid (server-created) client, and the methods
+	  available to each.  Thanks to Christian Chapman <secret_hamster@hotmail.com>
+
 
 0.23
 	- Fixed a bug in using Crypt::RSA that completely prevented it from functioning
